@@ -1,0 +1,15 @@
+{
+  "files": {
+    "main.css": "/team-accounting/static/css/main.e6c13ad2.css",
+    "main.js": "/team-accounting/static/js/main.aab1e296.js",
+    "static/js/453.fd8ba581.chunk.js": "/team-accounting/static/js/453.fd8ba581.chunk.js",
+    "index.html": "/team-accounting/index.html",
+    "main.e6c13ad2.css.map": "/team-accounting/static/css/main.e6c13ad2.css.map",
+    "main.aab1e296.js.map": "/team-accounting/static/js/main.aab1e296.js.map",
+    "453.fd8ba581.chunk.js.map": "/team-accounting/static/js/453.fd8ba581.chunk.js.map"
+  },
+  "entrypoints": [
+    "static/css/main.e6c13ad2.css",
+    "static/js/main.aab1e296.js"
+  ]
+}
