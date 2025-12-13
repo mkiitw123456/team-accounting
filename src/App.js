@@ -1,18 +1,17 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Plus, Check, X, History, Users, Calculator, Wallet, 
-  ArrowRight, Sun, Moon, Edit3, Trash2, Search, Filter, Calendar
+  ArrowRight, Sun, Moon, Edit3, Trash2, Search, Filter, Calendar,
+  Clock, Skull, List, Tag, ShieldAlert, RefreshCw
 } from 'lucide-react';
 
 // === Firebase 引入 ===
-// 如果你在本地開發，請記得執行 npm install firebase
 import { initializeApp } from "firebase/app";
 import { 
   getFirestore, collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, query, orderBy 
 } from "firebase/firestore";
 
-// === Firebase 設定檔 (請填入你的設定) ===
-// 這裡的資料需要從 Firebase Console 取得
+// === Firebase 設定檔 ===
 const firebaseConfig = {
   apiKey: "AIzaSyCwQjAtEjJGhVv2KuB0HwazdqQ4lhP2I_w",
   authDomain: "nmsl-accounting.firebaseapp.com",
@@ -26,15 +25,14 @@ const firebaseConfig = {
 // 初始化 Firebase
 let db;
 try {
-  // 簡單檢查是否已填入 key，避免初始化錯誤
-  if (firebaseConfig.apiKey !== "請填入你的_apiKey") {
-    const app = initializeApp(firebaseConfig);
-    db = getFirestore(app);
-  }
+  // 直接初始化，移除之前的判斷式
+  const app = initializeApp(firebaseConfig);
+  db = getFirestore(app);
 } catch (error) {
   console.error("Firebase 初始化失敗，請檢查設定檔", error);
 }
 
+// === 共用常數 ===
 const MEMBERS = [
   "水野", "vina", "Avalon", "Ricky", "五十嵐", "水月", "彌砂", "Wolf", "UBS"
 ];
@@ -46,14 +44,76 @@ const EXCHANGE_TYPES = {
 
 const BASE_LISTING_FEE_PERCENT = 0.02;
 
+// === 工具函式 ===
 const formatDate = (isoString) => {
   if (!isoString) return '無紀錄';
   return new Date(isoString).toLocaleString('zh-TW', {
-    year: 'numeric', month: '2-digit', day: '2-digit', 
-    hour: '2-digit', minute: '2-digit'
+    month: '2-digit', day: '2-digit', 
+    hour: '2-digit', minute: '2-digit', hour12: false
   });
 };
 
+const formatTimeOnly = (isoString) => {
+  if (!isoString) return '--:--';
+  return new Date(isoString).toLocaleString('zh-TW', {
+    hour: '2-digit', minute: '2-digit', hour12: false
+  });
+};
+
+const formatTimeWithSeconds = (date) => {
+  return date.toLocaleString('zh-TW', {
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+  });
+};
+
+const getRelativeDay = (dateString) => {
+  const date = new Date(dateString);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const target = new Date(date);
+  target.setHours(0, 0, 0, 0);
+  
+  const diffTime = target.getTime() - today.getTime();
+  const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
+
+  if (diffDays === -1) return 'yesterday';
+  if (diffDays === 0) return 'today';
+  if (diffDays === 1) return 'tomorrow';
+  return 'other';
+};
+
+// 產生隨機亮色 (HSL -> Hex)
+const getRandomBrightColor = () => {
+  const h = Math.floor(Math.random() * 360);
+  const s = 70 + Math.random() * 30; // 70-100% 飽和度
+  const l = 45 + Math.random() * 15; // 45-60% 亮度
+  
+  const lDiv = l / 100;
+  const a = s * Math.min(lDiv, 1 - lDiv) / 100;
+  const f = n => {
+    const k = (n + h / 30) % 12;
+    const color = lDiv - a * Math.max(Math.min(k - 3, 9 - k, 1), -1);
+    return Math.round(255 * color).toString(16).padStart(2, '0');
+  };
+  return `#${f(0)}${f(8)}${f(4)}`;
+};
+
+const getCurrentDateStr = () => {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const getCurrentTimeStr = () => {
+  const now = new Date();
+  const hours = String(now.getHours()).padStart(2, '0');
+  const minutes = String(now.getMinutes()).padStart(2, '0');
+  return `${hours}:${minutes}`;
+};
+
+// 計算記帳財務
 const calculateFinance = (price, typeKey, participantCount, listingCount = 1) => {
   const p = parseFloat(price) || 0;
   const lCount = parseInt(listingCount) || 1;
@@ -69,310 +129,582 @@ const calculateFinance = (price, typeKey, participantCount, listingCount = 1) =>
   return { afterTaxPrice, perPersonSplit, totalTaxRate, listingFeeRate };
 };
 
-// 獨立卡片元件
-const ItemCard = ({ 
-  item, 
-  isHistory = false, 
-  theme, 
-  isDarkMode,
-  updateItemValue,
-  toggleParticipantSettled,
-  handleSettleAll,
-  handleDelete,
-  confirmSettleId,
-  setConfirmSettleId,
-  confirmDeleteId,
-  setConfirmDeleteId
-}) => {
-  const { afterTaxPrice, perPersonSplit, totalTaxRate, listingFeeRate } = calculateFinance(
-    item.price, 
-    item.exchangeType, 
-    item.participants.length,
-    item.listingCount
-  );
+// ==========================================
+// Component: 記帳視圖 (AccountingView)
+// ==========================================
+const AccountingView = ({ isDarkMode, dbReady }) => {
+  const [items, setItems] = useState([]);
+  const [historyItems, setHistoryItems] = useState([]);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+  const [confirmSettleId, setConfirmSettleId] = useState(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  
+  const [historyFilter, setHistoryFilter] = useState({ name: '', date: '', dateType: 'created' });
+  const [formData, setFormData] = useState({
+    seller: MEMBERS[0], itemName: '', price: '', listingCount: 1, exchangeType: 'GENERAL', participants: [] 
+  });
+  const [tempParticipant, setTempParticipant] = useState(MEMBERS[0]);
 
-  const isAllParticipantsSettled = item.participants.every(p => p.isSettled);
+  useEffect(() => {
+    if (!db) return;
+    const qItems = query(collection(db, "active_items"), orderBy("createdAt", "desc"));
+    const unsubscribeItems = onSnapshot(qItems, (snapshot) => {
+      setItems(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    });
+    const qHistory = query(collection(db, "history_items"), orderBy("settledAt", "desc"));
+    const unsubscribeHistory = onSnapshot(qHistory, (snapshot) => {
+      setHistoryItems(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    });
+    return () => { unsubscribeItems(); unsubscribeHistory(); };
+  }, [dbReady]);
 
-  return (
-    <div className={`rounded-xl shadow-md border-l-4 p-6 transition-all hover:shadow-lg relative ${theme.card} ${
-      isHistory ? 'border-gray-500 opacity-90' : 'border-blue-500'
-    }`}>
-      {/* 頂部區域 */}
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-4 gap-4">
-        <div className="flex flex-col gap-1 pr-8 w-full">
-           <div className="flex flex-wrap items-center gap-3">
-              <div className="bg-blue-100 text-blue-800 font-bold px-3 py-1 rounded-md text-sm">
-                {item.seller}
-              </div>
+  const handleAddItem = async () => {
+    if (!db) return;
+    if (!formData.itemName || !formData.price) { alert("請填寫物品名稱與價格"); return; }
+    // 確保賣家在參與者名單中
+    const finalParticipants = [...new Set([...formData.participants, formData.seller])];
+    
+    const newItem = {
+      ...formData,
+      participants: finalParticipants.map(p => ({ name: p, isSettled: false })),
+      isSold: false, createdAt: new Date().toISOString(), settledAt: null 
+    };
+    await addDoc(collection(db, "active_items"), newItem);
+    setFormData({ seller: MEMBERS[0], itemName: '', price: '', listingCount: 1, exchangeType: 'GENERAL', participants: [] });
+    setIsModalOpen(false); setShowHistory(false);
+  };
+
+  const toggleParticipantSettled = async (itemId, pName, currentParticipants) => {
+    if (!db) return;
+    const updated = currentParticipants.map(p => p.name === pName ? { ...p, isSettled: !p.isSettled } : p);
+    await updateDoc(doc(db, "active_items", itemId), { participants: updated });
+  };
+
+  const updateItemValue = async (id, field, value) => {
+    if (!db) return;
+    await updateDoc(doc(db, "active_items", id), { [field]: value });
+  };
+
+  const handleSettleAll = async (item) => {
+    if (!db) return;
+    await addDoc(collection(db, "history_items"), { ...item, settledAt: new Date().toISOString() });
+    await deleteDoc(doc(db, "active_items", item.id));
+    setConfirmSettleId(null);
+  };
+
+  const handleDelete = async (id) => {
+    if (!db) return;
+    if (showHistory) await deleteDoc(doc(db, "history_items", id));
+    else await deleteDoc(doc(db, "active_items", id));
+    setConfirmDeleteId(null);
+  };
+
+  const theme = {
+    card: isDarkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-white',
+    text: isDarkMode ? 'text-gray-100' : 'text-gray-800',
+    subText: isDarkMode ? 'text-gray-400' : 'text-gray-500',
+    input: isDarkMode ? 'bg-gray-700 border-gray-600 text-white' : 'bg-gray-50 border-gray-200 text-gray-800',
+    sectionBg: isDarkMode ? 'bg-gray-700/30' : 'bg-gray-50',
+  };
+
+  const ItemCard = ({ item, isHistory }) => {
+    const { afterTaxPrice, perPersonSplit, totalTaxRate, listingFeeRate } = calculateFinance(
+      item.price, item.exchangeType, item.participants.length, item.listingCount
+    );
+    const isAllSettled = item.participants.every(p => p.isSettled);
+
+    return (
+      <div className={`rounded-xl shadow-md border-l-4 p-6 relative ${theme.card} ${isHistory ? 'border-gray-500 opacity-90' : 'border-blue-500'}`}>
+        <div className="flex justify-between items-start mb-4">
+          <div className="flex flex-col gap-1 w-full pr-10">
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="bg-blue-100 text-blue-800 font-bold px-2 py-1 rounded text-xs">{item.seller}</span>
               <h3 className={`text-xl font-bold ${theme.text}`}>{item.itemName}</h3>
-              <span className={`px-2 py-0.5 text-xs rounded-full border ${
-                item.exchangeType === 'WORLD' 
-                ? 'bg-purple-100 text-purple-700 border-purple-200' 
-                : 'bg-green-100 text-green-700 border-green-200'
-              }`}>
+              <span className="px-2 py-0.5 text-xs rounded-full border bg-green-100 text-green-700 border-green-200">
                 {EXCHANGE_TYPES[item.exchangeType].label}
               </span>
-              {isHistory && (
-                <span className="text-xs px-2 py-0.5 bg-orange-100 text-orange-800 rounded-full border border-orange-200">
-                  刊登 {item.listingCount || 1} 次
-                </span>
-              )}
-           </div>
-           
-           {isHistory && (
-             <div className="flex flex-wrap gap-3 text-xs text-gray-400 mt-1">
-               <span className="flex items-center gap-1"><Calendar size={10}/> 建立: {formatDate(item.createdAt)}</span>
-               <span className="flex items-center gap-1"><Check size={10}/> 結算: {formatDate(item.settledAt)}</span>
-             </div>
-           )}
-        </div>
-
-        {/* 刪除按鈕 */}
-        <div className="absolute top-4 right-4 flex items-center">
-          {confirmDeleteId === item.id ? (
-            <div className="flex items-center gap-2 bg-red-50 p-1 rounded-lg border border-red-200 animate-fadeIn mr-2 z-10">
-              <span className="text-xs text-red-600 font-bold ml-1">確定刪除?</span>
-              <button 
-                onClick={() => handleDelete(item.id)}
-                className="px-2 py-1 bg-red-500 text-white text-xs rounded hover:bg-red-600"
-              >
-                是
-              </button>
-              <button 
-                onClick={() => setConfirmDeleteId(null)}
-                className="px-2 py-1 bg-gray-200 text-gray-700 text-xs rounded hover:bg-gray-300"
-              >
-                否
-              </button>
             </div>
-          ) : (
-            <button 
-              onClick={(e) => {
-                e.stopPropagation();
-                setConfirmDeleteId(item.id);
-                setConfirmSettleId(null);
-              }}
-              className={`p-2 rounded-full transition-colors ${
-                isDarkMode ? 'hover:bg-gray-700 text-gray-500 hover:text-red-400' : 'hover:bg-red-50 text-gray-400 hover:text-red-500'
-              }`}
-              title="刪除此項目"
-            >
-              <Trash2 size={18} />
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* 財務資訊區塊 */}
-      <div className={`grid grid-cols-1 md:grid-cols-3 gap-4 p-4 rounded-lg mb-4 ${theme.sectionBg}`}>
-        <div className="flex flex-col">
-          <span className={`text-xs ${theme.subText} mb-1 flex items-center gap-1`}>
-            {!isHistory && <Edit3 size={10} />}
-            原始販售價格
-          </span>
-          <div className={`text-lg font-semibold flex items-center ${theme.text}`}>
-            <span className="text-sm mr-1">$</span>
-            {isHistory ? (
-                parseInt(item.price).toLocaleString()
+            {isHistory && <div className="text-xs text-gray-400 flex gap-2"><span>建: {formatDate(item.createdAt)}</span><span>結: {formatDate(item.settledAt)}</span></div>}
+          </div>
+          <div className="absolute top-4 right-4">
+            {confirmDeleteId === item.id ? (
+              <div className="flex gap-2 bg-red-50 p-1 rounded border border-red-200">
+                <button onClick={() => handleDelete(item.id)} className="text-xs bg-red-500 text-white px-2 py-1 rounded">刪除</button>
+                <button onClick={() => setConfirmDeleteId(null)} className="text-xs bg-gray-200 text-gray-700 px-2 py-1 rounded">取消</button>
+              </div>
             ) : (
-              <input 
-                type="number"
-                value={item.price}
-                onChange={(e) => updateItemValue(item.id, 'price', e.target.value)}
-                className={`w-full max-w-[120px] rounded px-2 py-0.5 border-b-2 border-transparent hover:border-blue-400 focus:border-blue-500 outline-none bg-transparent transition-colors`}
-                placeholder="0"
-              />
+              <button onClick={() => { setConfirmDeleteId(item.id); setConfirmSettleId(null); }} className="text-gray-400 hover:text-red-500 p-1"><Trash2 size={18}/></button>
             )}
           </div>
         </div>
 
-        <div className="flex flex-col relative">
-            <div className="absolute top-0 right-0 flex flex-col items-end gap-1">
-              <div className={`text-[10px] ${isDarkMode ? 'text-gray-300 bg-gray-600' : 'text-gray-500 bg-white'} px-1 border rounded shadow-sm`}>
-                總扣除: -{(totalTaxRate * 100).toFixed(0)}%
-              </div>
+        <div className={`grid grid-cols-3 gap-4 p-4 rounded mb-4 ${theme.sectionBg}`}>
+          <div className="flex flex-col">
+            <span className={`text-xs ${theme.subText}`}>售價</span>
+            <div className={`text-lg font-bold ${theme.text}`}>
+              {!isHistory ? <input type="number" className="bg-transparent w-20 border-b border-gray-400 focus:border-blue-500 outline-none" value={item.price} onChange={e => updateItemValue(item.id, 'price', e.target.value)}/> : item.price}
             </div>
-
-          <span className={`text-xs ${theme.subText} mb-1`}>稅後價格 (淨利)</span>
-          <div className="text-lg font-semibold text-blue-600 flex items-center">
-            <span className="text-sm mr-1">$</span>
-            {afterTaxPrice.toLocaleString()}
           </div>
-          {!isHistory && (
-              <div className="mt-1 flex items-center gap-2 text-xs">
-                <span className={theme.subText}>刊登次數:</span>
-                <input 
-                  type="number" 
-                  min="1"
-                  value={item.listingCount || 1}
-                  onChange={(e) => updateItemValue(item.id, 'listingCount', e.target.value)}
-                  className={`w-12 text-center rounded border ${theme.input} text-xs py-0.5`}
-                />
-                <span className="text-[10px] text-orange-500">
-                  (-{(listingFeeRate * 100).toFixed(0)}%)
-                </span>
-              </div>
-          )}
-        </div>
-
-        <div className="flex flex-col">
-          <span className={`text-xs ${theme.subText} mb-1`}>每人預計收益 ({item.participants.length}人)</span>
-          <div className="text-lg font-semibold text-green-600 flex items-center">
-            <span className="text-sm mr-1">$</span>
-            {perPersonSplit.toLocaleString()}
+          <div className="flex flex-col">
+            <span className={`text-xs ${theme.subText}`}>稅後 ({(totalTaxRate*100).toFixed(0)}%)</span>
+            <div className="text-lg font-bold text-blue-500">{afterTaxPrice.toLocaleString()}</div>
+            {!isHistory && <div className="text-xs flex items-center gap-1">刊登 <input type="number" min="1" className={`w-8 text-center rounded border ${theme.input}`} value={item.listingCount} onChange={e => updateItemValue(item.id, 'listingCount', e.target.value)}/>次</div>}
+          </div>
+          <div className="flex flex-col">
+            <span className={`text-xs ${theme.subText}`}>每人</span>
+            <div className="text-lg font-bold text-green-500">{perPersonSplit.toLocaleString()}</div>
           </div>
         </div>
-      </div>
 
-      {/* 參與人員名單 */}
-      <div className="space-y-2">
-        <h4 className={`text-sm font-medium ${theme.subText} flex items-center gap-2`}>
-          <Users size={16} />
-          參與人員分配狀況
-        </h4>
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
+        <div className="grid grid-cols-4 gap-2">
           {item.participants.map((p, idx) => (
-            <div 
-              key={idx}
-              // 點擊區域優化：整個區塊均可點擊
-              onClick={() => !isHistory && toggleParticipantSettled(item.id, p.name, item.participants)}
-              className={`flex items-center justify-between p-2 rounded border text-sm transition-all select-none ${
-                !isHistory ? 'cursor-pointer active:scale-95 hover:bg-opacity-80' : ''
-              } ${
-                p.isSettled 
-                  ? 'bg-green-50 border-green-200 text-green-800' 
-                  : isDarkMode 
-                    ? 'bg-gray-700 border-gray-600 text-gray-200 hover:bg-gray-600' 
-                    : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'
-              }`}
-            >
-              <span className="font-medium">{p.name}</span>
-              {!isHistory ? (
-                <div 
-                  className={`p-1 rounded-full transition-colors ${
-                    p.isSettled 
-                      ? 'bg-green-500 text-white' 
-                      : 'bg-gray-200 text-gray-400'
-                  }`}
-                >
-                  <Check size={14} />
-                </div>
-              ) : (
-                  p.isSettled && <Check size={14} className="text-green-500" />
-              )}
+            <div key={idx} onClick={() => !isHistory && toggleParticipantSettled(item.id, p.name, item.participants)} 
+                 className={`p-2 rounded border text-sm flex justify-between items-center cursor-pointer select-none ${p.isSettled ? 'bg-green-50 border-green-200 text-green-800' : `${theme.card} hover:opacity-80`}`}>
+              <span>{p.name}</span>
+              {p.isSettled && <Check size={14}/>}
             </div>
           ))}
-          {item.participants.length === 0 && (
-            <span className={`text-sm ${theme.subText} italic`}>無參與人員</span>
-          )}
+        </div>
+
+        {!isHistory && (
+          <div className="mt-4 flex justify-end">
+            {confirmSettleId === item.id ? (
+              <div className="flex gap-2 items-center">
+                <span className="text-sm text-red-500">確認結算?</span>
+                <button onClick={() => handleSettleAll(item)} className="bg-red-500 text-white px-3 py-1 rounded text-sm">是</button>
+                <button onClick={() => setConfirmSettleId(null)} className="bg-gray-200 text-gray-700 px-3 py-1 rounded text-sm">否</button>
+              </div>
+            ) : (
+              <button onClick={() => { setConfirmSettleId(item.id); setConfirmDeleteId(null); }} disabled={!isAllSettled} 
+                      className={`flex items-center gap-2 px-4 py-2 rounded font-bold text-sm ${isAllSettled ? 'bg-blue-600 text-white shadow' : 'bg-gray-200 text-gray-400 cursor-not-allowed'}`}>
+                <Wallet size={16}/> 結算歸檔
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const filteredHistory = historyItems.filter(i => {
+    if (historyFilter.name && !i.itemName.toLowerCase().includes(historyFilter.name.toLowerCase())) return false;
+    if (historyFilter.date) {
+      const target = historyFilter.dateType === 'created' ? i.createdAt : i.settledAt;
+      if (!target || !target.startsWith(historyFilter.date)) return false;
+    }
+    return true;
+  });
+
+  return (
+    <div className="p-4 md:p-6 max-w-7xl mx-auto">
+      <div className="flex justify-between items-center mb-6">
+        <h2 className={`text-xl font-bold border-l-4 pl-3 ${showHistory ? 'border-gray-500' : 'border-blue-500'} ${theme.text}`}>
+          {showHistory ? `歷史紀錄 (${filteredHistory.length})` : `進行中項目 (${items.length})`}
+        </h2>
+        <div className="flex gap-2">
+          <button onClick={() => setShowHistory(!showHistory)} className={`flex items-center gap-2 px-3 py-2 rounded ${showHistory ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-600'}`}>
+            <History size={18}/> {showHistory ? '返回' : '歷史'}
+          </button>
+          <button onClick={() => setIsModalOpen(true)} className="flex items-center gap-2 px-3 py-2 rounded bg-blue-600 text-white shadow hover:bg-blue-700">
+            <Plus size={18}/> 新增項目
+          </button>
         </div>
       </div>
 
-      {/* 底部按鈕區 */}
-      {!isHistory && (
-        <div className={`mt-6 flex justify-end pt-4 border-t ${isDarkMode ? 'border-gray-700' : 'border-gray-100'}`}>
-            {confirmSettleId === item.id ? (
-              <div className="flex items-center gap-2 animate-fadeIn">
-                <span className="text-sm text-red-600 font-medium">確認全部結算並移除?</span>
-                <button 
-                  onClick={() => handleSettleAll(item)}
-                  className="px-3 py-1.5 bg-red-500 text-white text-sm rounded hover:bg-red-600 transition-colors"
-                >
-                  是
-                </button>
-                <button 
-                  onClick={() => setConfirmSettleId(null)}
-                  className="px-3 py-1.5 bg-gray-200 text-gray-700 text-sm rounded hover:bg-gray-300 transition-colors"
-                >
-                  否
-                </button>
-              </div>
-            ) : (
-              <button
-                onClick={() => {
-                  setConfirmSettleId(item.id);
-                  setConfirmDeleteId(null);
-                }}
-                className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-colors ${
-                  isAllParticipantsSettled
-                    ? 'bg-indigo-600 text-white hover:bg-indigo-700 shadow-md'
-                    : 'bg-gray-100 text-gray-400 cursor-not-allowed hover:bg-gray-200'
-                }`}
-                disabled={!isAllParticipantsSettled} 
-                title={!isAllParticipantsSettled ? "請先將所有人員標記為已結算" : ""}
-              >
-                <Wallet size={18} />
-                全部結算歸檔
-              </button>
-            )}
+      {showHistory && (
+        <div className={`p-4 rounded mb-6 flex flex-wrap gap-4 items-end ${isDarkMode ? 'bg-gray-800' : 'bg-white shadow-sm'}`}>
+          <div className="flex-1 min-w-[200px]"><label className={`text-xs ${theme.subText}`}>搜尋名稱</label><input type="text" className={`w-full p-2 rounded border ${theme.input}`} value={historyFilter.name} onChange={e=>setHistoryFilter({...historyFilter, name: e.target.value})}/></div>
+          <div className="flex-1 min-w-[200px]"><label className={`text-xs ${theme.subText}`}>日期</label><input type="date" className={`w-full p-2 rounded border ${theme.input}`} value={historyFilter.date} onChange={e=>setHistoryFilter({...historyFilter, date: e.target.value})}/></div>
+          <button onClick={() => setHistoryFilter({name:'', date:'', dateType:'created'})} className="p-2 bg-gray-200 rounded hover:bg-red-200"><X size={20}/></button>
+        </div>
+      )}
+
+      <div className="space-y-6">
+        {(showHistory ? filteredHistory : items).map(item => (
+          <ItemCard key={item.id} item={item} isHistory={showHistory} />
+        ))}
+        {(showHistory ? filteredHistory : items).length === 0 && (
+          <div className={`text-center py-20 ${theme.subText}`}>沒有資料</div>
+        )}
+      </div>
+
+      {isModalOpen && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+          <div className={`w-full max-w-2xl rounded-xl p-6 ${isDarkMode ? 'bg-gray-800 text-white' : 'bg-white text-gray-800'}`}>
+            <h3 className="text-xl font-bold mb-4">建立新記帳項目</h3>
+            <div className="grid grid-cols-2 gap-4 mb-4">
+              <div><label className="block text-xs mb-1 opacity-70">販賣人</label><select className={`w-full p-2 rounded border ${theme.input}`} value={formData.seller} onChange={e=>setFormData({...formData, seller: e.target.value})}>{MEMBERS.map(m=><option key={m} value={m}>{m}</option>)}</select></div>
+              <div><label className="block text-xs mb-1 opacity-70">價格</label><input type="number" className={`w-full p-2 rounded border ${theme.input}`} value={formData.price} onChange={e=>setFormData({...formData, price: e.target.value})}/></div>
+              <div><label className="block text-xs mb-1 opacity-70">物品名稱</label><input type="text" className={`w-full p-2 rounded border ${theme.input}`} value={formData.itemName} onChange={e=>setFormData({...formData, itemName: e.target.value})}/></div>
+              <div><label className="block text-xs mb-1 opacity-70">刊登次數</label><input type="number" min="1" className={`w-full p-2 rounded border ${theme.input}`} value={formData.listingCount} onChange={e=>setFormData({...formData, listingCount: parseInt(e.target.value)||1})}/></div>
+            </div>
+            <div className="mb-4 flex gap-2">{Object.keys(EXCHANGE_TYPES).map(k=><button key={k} onClick={()=>setFormData({...formData, exchangeType: k})} className={`flex-1 py-1 rounded border ${formData.exchangeType===k ? 'bg-blue-50 border-blue-500 text-blue-700' : 'border-gray-200 opacity-60'}`}>{EXCHANGE_TYPES[k].label}</button>)}</div>
+            <div className="mb-4 pt-4 border-t border-gray-200">
+              <div className="flex gap-2 mb-2"><select className={`flex-1 p-2 rounded border ${theme.input}`} value={tempParticipant} onChange={e=>setTempParticipant(e.target.value)}>{MEMBERS.map(m=><option key={m} value={m}>{m}</option>)}</select><button onClick={()=>{if(!formData.participants.includes(tempParticipant))setFormData({...formData, participants:[...formData.participants, tempParticipant]})}} className="bg-green-500 text-white p-2 rounded"><Plus/></button></div>
+              <div className="flex flex-wrap gap-2">{formData.participants.map(p=><span key={p} className="bg-gray-100 px-2 py-1 rounded text-sm flex items-center gap-1 text-gray-700">{p}<button onClick={()=>setFormData({...formData, participants: formData.participants.filter(x=>x!==p)})}><X size={12}/></button></span>)}</div>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button onClick={()=>setIsModalOpen(false)} className="px-4 py-2 bg-gray-200 rounded hover:bg-gray-300 text-gray-700">取消</button>
+              <button onClick={handleAddItem} className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">建立項目</button>
+            </div>
+          </div>
         </div>
       )}
     </div>
   );
 };
 
-export default function AccountingApp() {
-  const [items, setItems] = useState([]);
-  const [historyItems, setHistoryItems] = useState([]);
+// ==========================================
+// Component: Boss 計時器視圖 (BossTimerView)
+// ==========================================
+const BossTimerView = ({ isDarkMode }) => {
+  const [bossTemplates, setBossTemplates] = useState([]);
+  const [bossEvents, setBossEvents] = useState([]);
+  const [now, setNow] = useState(new Date()); 
   
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [showHistory, setShowHistory] = useState(false);
-  const [confirmSettleId, setConfirmSettleId] = useState(null);
+  const [isCreateBossModalOpen, setIsCreateBossModalOpen] = useState(false);
+  const [isAddRecordModalOpen, setIsAddRecordModalOpen] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const [editingBossId, setEditingBossId] = useState(null);
+
+  const [newBossForm, setNewBossForm] = useState({ name: '', respawnMinutes: 60, color: '#FF5733' });
+  const [recordForm, setRecordForm] = useState({ templateId: '', timeMode: 'current', specificDate: '', specificTime: '' });
+
+  useEffect(() => {
+    if (!db) return;
+    const unsubTemplates = onSnapshot(collection(db, "boss_templates"), snap => {
+      setBossTemplates(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    });
+    const qEvents = query(collection(db, "boss_events"), orderBy("respawnTime", "asc"));
+    const unsubEvents = onSnapshot(qEvents, snap => {
+      setBossEvents(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    });
+    return () => { unsubTemplates(); unsubEvents(); };
+  }, []);
+
+  // 時鐘與自動刪除機制
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const currentTime = new Date();
+      setNow(currentTime);
+
+      // 自動刪除過期 5 分鐘以上的 Boss 標籤
+      bossEvents.forEach(event => {
+        const respawnTime = new Date(event.respawnTime);
+        const diffMinutes = (currentTime - respawnTime) / 1000 / 60;
+        
+        // 只有當超過 5 分鐘，且尚未被刪除時
+        if (diffMinutes > 5) {
+          if (db) {
+            deleteDoc(doc(db, "boss_events", event.id)).catch(err => console.error("Auto delete fail", err));
+          }
+        }
+      });
+    }, 1000); 
+
+    return () => clearInterval(timer);
+  }, [bossEvents]); 
+
+  const handleOpenCreateBoss = (bossToEdit = null) => {
+    if (bossToEdit) {
+      setEditingBossId(bossToEdit.id);
+      setNewBossForm({ 
+        name: bossToEdit.name, 
+        respawnMinutes: bossToEdit.respawnMinutes, 
+        color: bossToEdit.color 
+      });
+    } else {
+      setEditingBossId(null);
+      setNewBossForm({ 
+        name: '', 
+        respawnMinutes: 60, 
+        color: getRandomBrightColor() 
+      });
+    }
+    setIsCreateBossModalOpen(true);
+  };
+
+  const handleCreateOrUpdateBoss = async () => {
+    if (!newBossForm.name) return alert("請輸入 Boss 名稱");
+    if (editingBossId) {
+      await updateDoc(doc(db, "boss_templates", editingBossId), newBossForm);
+    } else {
+      await addDoc(collection(db, "boss_templates"), newBossForm);
+    }
+    setIsCreateBossModalOpen(false);
+  };
+
+  const handleAddRecord = async () => {
+    if (!recordForm.templateId) return alert("請選擇 Boss");
+    const template = bossTemplates.find(b => b.id === recordForm.templateId);
+    if (!template) return;
+
+    let baseTime = new Date();
+    if (recordForm.timeMode === 'specific') {
+      if (!recordForm.specificDate || !recordForm.specificTime) return alert("請輸入完整的日期與時間");
+      baseTime = new Date(`${recordForm.specificDate}T${recordForm.specificTime}`);
+    }
+
+    const respawnTime = new Date(baseTime.getTime() + template.respawnMinutes * 60000);
+
+    const newEvent = {
+      templateId: template.id,
+      name: template.name,
+      color: template.color,
+      deathTime: baseTime.toISOString(),
+      respawnTime: respawnTime.toISOString(),
+      createdAt: new Date().toISOString()
+    };
+
+    await addDoc(collection(db, "boss_events"), newEvent);
+    setIsAddRecordModalOpen(false);
+  };
+
+  const handleDeleteEvent = async (id) => {
+    await deleteDoc(doc(db, "boss_events", id));
+    setConfirmDeleteId(null);
+  };
+
+  const handleDeleteTemplate = async (id) => {
+    if(!window.confirm("確定要刪除這個 Boss 設定嗎？")) return;
+    await deleteDoc(doc(db, "boss_templates", id));
+  }
+
+  const handleRandomizeColor = () => {
+    setNewBossForm({ ...newBossForm, color: getRandomBrightColor() });
+  };
+
+  const theme = {
+    text: isDarkMode ? 'text-gray-100' : 'text-gray-800',
+    subText: isDarkMode ? 'text-gray-400' : 'text-gray-500',
+    card: isDarkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200',
+    input: isDarkMode ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300 text-gray-800',
+  };
+
+  const groupedEvents = {
+    yesterday: bossEvents.filter(e => getRelativeDay(e.respawnTime) === 'yesterday'),
+    today: bossEvents.filter(e => getRelativeDay(e.respawnTime) === 'today'),
+    tomorrow: bossEvents.filter(e => getRelativeDay(e.respawnTime) === 'tomorrow'),
+  };
+
+  // 顯示所有尚未被自動刪除的事件 (包含未來的，以及剛剛過期還沒滿5分鐘的)
+  const displayEvents = bossEvents.filter(e => {
+    const diff = (now - new Date(e.respawnTime)) / 1000 / 60;
+    return diff <= 5; 
+  });
+
+  // 計算下一個即將出現的 Boss (必須是未來時間)
+  const nextBoss = bossEvents.find(e => new Date(e.respawnTime) > now);
+
+  const EventItem = ({ event }) => (
+    <div className={`p-3 mb-2 rounded border-l-4 shadow-sm flex justify-between items-center ${theme.card}`} style={{ borderLeftColor: event.color }}>
+      <div>
+        <div className="font-bold text-sm">{event.name}</div>
+        <div className="text-xs opacity-70 flex items-center gap-1">
+          <Skull size={10}/> 亡: {formatTimeOnly(event.deathTime)}
+        </div>
+        <div className="text-lg font-mono font-bold text-blue-500 flex items-center gap-1">
+          <Clock size={14}/> {formatTimeOnly(event.respawnTime)}
+        </div>
+      </div>
+      {confirmDeleteId === event.id ? (
+        <button onClick={() => handleDeleteEvent(event.id)} className="bg-red-500 text-white text-xs px-2 py-1 rounded">確認</button>
+      ) : (
+        <button onClick={() => setConfirmDeleteId(event.id)} className="text-gray-400 hover:text-red-500"><X size={16}/></button>
+      )}
+    </div>
+  );
+
+  return (
+    <div className="p-4 h-[calc(100vh-80px)] flex flex-col">
+      
+      {/* 頂部儀表板：時鐘與 Next Boss */}
+      <div className={`mb-6 p-4 rounded-xl shadow-lg flex flex-col md:flex-row items-center justify-between ${isDarkMode ? 'bg-indigo-900/50 text-white' : 'bg-indigo-600 text-white'}`}>
+        <div className="flex items-center gap-4">
+          <Clock size={40} className="opacity-80"/>
+          <div className="flex flex-col">
+            <span className="text-xs opacity-70 font-bold tracking-widest">CURRENT TIME</span>
+            <span className="text-3xl font-mono font-bold">{formatTimeWithSeconds(now)}</span>
+          </div>
+        </div>
+        
+        {nextBoss ? (
+          <div className="mt-4 md:mt-0 flex items-center gap-3 bg-white/10 px-4 py-2 rounded-lg backdrop-blur-sm border border-white/20">
+            <span className="text-xs font-bold opacity-70">NEXT BOSS</span>
+            <div className="flex items-center gap-2">
+              <div className="w-3 h-3 rounded-full shadow-[0_0_8px_rgba(255,255,255,0.8)]" style={{ backgroundColor: nextBoss.color }}></div>
+              <span className="text-xl font-bold">{nextBoss.name}</span>
+              <span className="font-mono text-lg ml-2">{formatTimeOnly(nextBoss.respawnTime)}</span>
+            </div>
+          </div>
+        ) : (
+          <div className="mt-4 md:mt-0 text-white/50 text-sm italic">
+            目前沒有等待中的 Boss
+          </div>
+        )}
+      </div>
+
+      {/* 工具列 */}
+      <div className="flex gap-4 mb-4">
+        <button onClick={() => handleOpenCreateBoss()} className="flex items-center gap-2 bg-purple-600 hover:bg-purple-500 text-white px-4 py-2 rounded shadow">
+          <Plus size={18}/> 建立 Boss
+        </button>
+        <button onClick={() => { 
+          setRecordForm({
+            templateId: bossTemplates[0]?.id || '', 
+            timeMode: 'current',
+            specificDate: getCurrentDateStr(),
+            specificTime: getCurrentTimeStr()
+          }); 
+          setIsAddRecordModalOpen(true); 
+        }} className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded shadow">
+          <Tag size={18}/> 新增標籤 (紀錄死亡)
+        </button>
+      </div>
+
+      <div className="flex flex-col lg:flex-row gap-6 h-full overflow-hidden">
+        {/* 時間軸 */}
+        <div className="flex-1 grid grid-cols-1 md:grid-cols-3 gap-4 h-full overflow-y-auto pb-20">
+          {['yesterday', 'today', 'tomorrow'].map(dayKey => (
+            <div key={dayKey} className={`rounded-xl p-4 flex flex-col ${isDarkMode ? 'bg-gray-800/50' : 'bg-gray-50 border'}`}>
+              <h3 className={`font-bold mb-3 capitalize text-center py-2 border-b ${theme.text}`}>
+                {dayKey === 'yesterday' ? '昨天' : dayKey === 'today' ? '今天' : '明天'}
+              </h3>
+              <div className="flex-1 overflow-y-auto space-y-2">
+                {groupedEvents[dayKey].length > 0 ? (
+                  groupedEvents[dayKey].map(event => <EventItem key={event.id} event={event} />)
+                ) : (
+                  <div className="text-center text-sm opacity-40 py-4">無重生紀錄</div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* 右側列表 (顯示所有未刪除的標籤) */}
+        <div className={`w-full lg:w-80 rounded-xl p-4 flex flex-col ${isDarkMode ? 'bg-gray-800' : 'bg-white shadow border'}`}>
+          <h3 className={`font-bold mb-3 flex items-center gap-2 ${theme.text}`}>
+            <List size={20}/> 重生順序列表
+          </h3>
+          <div className="flex-1 overflow-y-auto space-y-2">
+            {displayEvents.length > 0 ? (
+              displayEvents.map(event => (
+                <div key={'list'+event.id} className="flex items-center justify-between p-2 border-b border-gray-100 last:border-0">
+                  <div className="flex items-center gap-2">
+                    <div className="w-3 h-3 rounded-full" style={{ backgroundColor: event.color }}></div>
+                    <span className={`text-sm ${theme.text}`}>{event.name}</span>
+                  </div>
+                  {/* 過期變紅並閃爍 */}
+                  <span className={`font-mono font-bold ${new Date(event.respawnTime) < now ? 'text-red-500 animate-pulse' : 'text-blue-500'}`}>
+                    {formatTimeOnly(event.respawnTime)}
+                  </span>
+                </div>
+              ))
+            ) : (
+              <div className="text-center opacity-50 py-4">目前沒有等待中的 Boss</div>
+            )}
+          </div>
+          
+          {/* Boss 模板列表 */}
+          <div className="mt-4 pt-4 border-t border-gray-200">
+             <h4 className="text-xs font-bold mb-2 opacity-70">Boss 設定列表</h4>
+             <div className="flex flex-col gap-2 max-h-40 overflow-y-auto pr-1">
+               {bossTemplates.map(t => (
+                 <div key={t.id} className={`text-xs px-2 py-1.5 rounded flex items-center justify-between ${isDarkMode ? 'bg-gray-700' : 'bg-gray-100'}`}>
+                   <div className="flex items-center gap-2">
+                     <div className="w-2 h-2 rounded-full" style={{backgroundColor: t.color}}></div>
+                     <span className={theme.text}>{t.name} ({t.respawnMinutes}m)</span>
+                   </div>
+                   <div className="flex gap-2">
+                     <button onClick={() => handleOpenCreateBoss(t)} className="text-blue-500 hover:text-blue-600"><Edit3 size={12}/></button>
+                     <button onClick={() => handleDeleteTemplate(t.id)} className="text-gray-400 hover:text-red-500"><X size={12}/></button>
+                   </div>
+                 </div>
+               ))}
+             </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Modal: 建立/編輯 Boss */}
+      {isCreateBossModalOpen && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+          <div className={`w-full max-w-sm rounded-xl p-6 ${isDarkMode ? 'bg-gray-800 text-white' : 'bg-white text-gray-800'}`}>
+            <h3 className="text-lg font-bold mb-4">{editingBossId ? '編輯 Boss' : '建立 Boss'}</h3>
+            <div className="space-y-4">
+              <div><label className="text-xs opacity-70">Boss 名稱</label><input type="text" className={`w-full p-2 rounded border ${theme.input}`} value={newBossForm.name} onChange={e=>setNewBossForm({...newBossForm, name: e.target.value})}/></div>
+              <div><label className="text-xs opacity-70">重生時間 (分鐘)</label><input type="number" className={`w-full p-2 rounded border ${theme.input}`} value={newBossForm.respawnMinutes} onChange={e=>setNewBossForm({...newBossForm, respawnMinutes: parseInt(e.target.value)||0})}/></div>
+              <div>
+                <label className="text-xs opacity-70">標籤顏色</label>
+                <div className="flex gap-2">
+                  <input type="color" className="flex-1 h-10 rounded cursor-pointer" value={newBossForm.color} onChange={e=>setNewBossForm({...newBossForm, color: e.target.value})}/>
+                  <button onClick={handleRandomizeColor} className="bg-gray-200 text-gray-700 px-3 rounded hover:bg-gray-300" title="隨機顏色"><RefreshCw size={16}/></button>
+                </div>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 mt-6">
+              <button onClick={() => setIsCreateBossModalOpen(false)} className="px-4 py-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300">取消</button>
+              <button onClick={handleCreateOrUpdateBoss} className="px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700">{editingBossId ? '更新' : '建立'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: 新增標籤 (紀錄死亡) */}
+      {isAddRecordModalOpen && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+          <div className={`w-full max-w-sm rounded-xl p-6 ${isDarkMode ? 'bg-gray-800 text-white' : 'bg-white text-gray-800'}`}>
+            <h3 className="text-lg font-bold mb-4">新增 Boss 標籤 (死亡紀錄)</h3>
+            <div className="space-y-4">
+              <div>
+                <label className="text-xs opacity-70">選擇 Boss</label>
+                <select className={`w-full p-2 rounded border ${theme.input}`} value={recordForm.templateId} onChange={e=>setRecordForm({...recordForm, templateId: e.target.value})}>
+                  <option value="" disabled>請選擇...</option>
+                  {bossTemplates.map(t => <option key={t.id} value={t.id}>{t.name} (CD: {t.respawnMinutes}m)</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs opacity-70">死亡時間基準</label>
+                <div className="flex gap-2 mt-1">
+                  <button onClick={()=>setRecordForm({...recordForm, timeMode: 'current'})} className={`flex-1 py-2 rounded text-sm border ${recordForm.timeMode==='current' ? 'bg-blue-50 border-blue-500 text-blue-700' : 'border-gray-200 opacity-60'}`}>當前時間</button>
+                  <button onClick={()=>setRecordForm({...recordForm, timeMode: 'specific'})} className={`flex-1 py-2 rounded text-sm border ${recordForm.timeMode==='specific' ? 'bg-blue-50 border-blue-500 text-blue-700' : 'border-gray-200 opacity-60'}`}>指定時間</button>
+                </div>
+              </div>
+              {recordForm.timeMode === 'specific' && (
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-xs opacity-70">日期</label>
+                    <input type="date" className={`w-full p-2 rounded border ${theme.input}`} value={recordForm.specificDate} onChange={e=>setRecordForm({...recordForm, specificDate: e.target.value})}/>
+                  </div>
+                  <div>
+                    <label className="text-xs opacity-70">時間 (24h)</label>
+                    <input type="time" className={`w-full p-2 rounded border ${theme.input}`} value={recordForm.specificTime} onChange={e=>setRecordForm({...recordForm, specificTime: e.target.value})}/>
+                  </div>
+                </div>
+              )}
+            </div>
+            <div className="flex justify-end gap-2 mt-6">
+              <button onClick={() => setIsAddRecordModalOpen(false)} className="px-4 py-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300">取消</button>
+              <button onClick={handleAddRecord} className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">建立標籤</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ==========================================
+// Main Application (Layout & Routing)
+// ==========================================
+export default function App() {
+  const [currentTab, setCurrentTab] = useState('ACCOUNTING');
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [dbReady, setDbReady] = useState(false);
 
-  const [historyFilter, setHistoryFilter] = useState({
-    name: '',
-    date: '',
-    dateType: 'created'
-  });
-
-  const [formData, setFormData] = useState({
-    seller: MEMBERS[0],
-    itemName: '',
-    price: '',
-    listingCount: 1,
-    exchangeType: 'GENERAL',
-    participants: [] 
-  });
-
-  const [tempParticipant, setTempParticipant] = useState(MEMBERS[0]);
-
-  // 1. 初始化資料監聽 (Firebase Listener)
   useEffect(() => {
-    // 檢查 DB 是否初始化成功
-    if (!db) return;
-    setDbReady(true);
-
-    // 監聽「進行中」的項目 (集合名稱: active_items)
-    // 注意：需在 Firebase Console 建立索引 (Index) 才能支援 orderBy 查詢
-    // 如果出現 requires an index 錯誤，請查看 Console 連結
-    const qItems = query(collection(db, "active_items"), orderBy("createdAt", "desc"));
-    const unsubscribeItems = onSnapshot(qItems, (snapshot) => {
-      const list = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setItems(list);
-    }, (error) => {
-      console.error("監聽進行中項目失敗:", error);
-    });
-
-    // 監聽「歷史紀錄」的項目 (集合名稱: history_items)
-    const qHistory = query(collection(db, "history_items"), orderBy("settledAt", "desc"));
-    const unsubscribeHistory = onSnapshot(qHistory, (snapshot) => {
-      const list = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setHistoryItems(list);
-    }, (error) => {
-       console.error("監聽歷史紀錄失敗:", error);
-    });
-
-    return () => {
-      unsubscribeItems();
-      unsubscribeHistory();
-    };
-  }, []);
-
-  // 2. 主題 LocalStorage
-  useEffect(() => {
+    if (db) setDbReady(true);
     const savedTheme = localStorage.getItem('accounting_theme');
     if (savedTheme) setIsDarkMode(savedTheme === 'dark');
   }, []);
@@ -381,502 +713,69 @@ export default function AccountingApp() {
     localStorage.setItem('accounting_theme', isDarkMode ? 'dark' : 'light');
   }, [isDarkMode]);
 
-  // === 資料庫操作函式 ===
-
-  const handleAddItem = async () => {
-    if (!db) { alert("尚未設定 Firebase Config，無法新增！"); return; }
-    if (!formData.itemName || !formData.price) { alert("請填寫物品名稱與價格"); return; }
-    
-    const newItem = {
-      ...formData,
-      isSold: false,
-      participants: formData.participants.map(p => ({
-        name: p,
-        isSettled: false
-      })),
-      createdAt: new Date().toISOString(),
-      settledAt: null 
-    };
-
-    try {
-      await addDoc(collection(db, "active_items"), newItem);
-      
-      setFormData({
-        seller: MEMBERS[0],
-        itemName: '',
-        price: '',
-        listingCount: 1,
-        exchangeType: 'GENERAL',
-        participants: []
-      });
-      setIsModalOpen(false);
-      setShowHistory(false); // 自動返回進行中頁面
-    } catch (e) {
-      console.error("新增失敗:", e);
-      alert("新增失敗，請檢查網路或權限");
-    }
-  };
-
-  const toggleParticipantSettled = async (itemId, pName, currentParticipants) => {
-    if (!db) return;
-    const updatedParticipants = currentParticipants.map(p => 
-      p.name === pName ? { ...p, isSettled: !p.isSettled } : p
-    );
-    const itemRef = doc(db, "active_items", itemId);
-    await updateDoc(itemRef, { participants: updatedParticipants });
-  };
-
-  const updateItemValue = async (id, field, value) => {
-    if (!db) return;
-    const itemRef = doc(db, "active_items", id);
-    await updateDoc(itemRef, { [field]: value });
-  };
-
-  const handleSettleAll = async (item) => {
-    if (!db) return;
-    const settledItem = { 
-      ...item, 
-      settledAt: new Date().toISOString() 
-    };
-    try {
-      await addDoc(collection(db, "history_items"), settledItem);
-      await deleteDoc(doc(db, "active_items", item.id));
-      setConfirmSettleId(null);
-    } catch (e) {
-      console.error("結算失敗:", e);
-    }
-  };
-
-  const handleDelete = async (id) => {
-    if (!db) return;
-    try {
-      if (showHistory) {
-         await deleteDoc(doc(db, "history_items", id));
-      } else {
-         await deleteDoc(doc(db, "active_items", id));
-      }
-      setConfirmDeleteId(null);
-    } catch (e) {
-      console.error("刪除失敗:", e);
-    }
-  };
-  
-  const handleDeleteHistory = async (id) => {
-    if (!db) return;
-    await deleteDoc(doc(db, "history_items", id));
-    setConfirmDeleteId(null);
-  };
-
-  // === UI 邏輯 ===
-
-  const addParticipantToForm = () => {
-    if (!formData.participants.includes(tempParticipant)) {
-      setFormData({
-        ...formData,
-        participants: [...formData.participants, tempParticipant]
-      });
-    }
-  };
-
-  const removeParticipantFromForm = (name) => {
-    setFormData({
-      ...formData,
-      participants: formData.participants.filter(p => p !== name)
-    });
-  };
-
-  const clearHistoryFilter = () => {
-    setHistoryFilter({ name: '', date: '', dateType: 'created' });
-  };
-
-  const getFilteredHistoryItems = () => {
-    let result = [...historyItems];
-    if (historyFilter.name) {
-      result = result.filter(i => i.itemName.toLowerCase().includes(historyFilter.name.toLowerCase()));
-    }
-    if (historyFilter.date) {
-      result = result.filter(i => {
-        const targetTime = historyFilter.dateType === 'created' ? i.createdAt : i.settledAt;
-        if (!targetTime) return false;
-        return targetTime.startsWith(historyFilter.date);
-      });
-    }
-    return result; 
-  };
-
   const theme = {
     bg: isDarkMode ? 'bg-gray-900' : 'bg-slate-100',
     nav: isDarkMode ? 'bg-gray-800' : 'bg-slate-900',
-    card: isDarkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-white',
     text: isDarkMode ? 'text-gray-100' : 'text-gray-800',
-    subText: isDarkMode ? 'text-gray-400' : 'text-gray-500',
-    input: isDarkMode ? 'bg-gray-700 border-gray-600 text-white' : 'bg-gray-50 border-gray-200 text-gray-800',
-    sectionBg: isDarkMode ? 'bg-gray-700/30' : 'bg-gray-50',
   };
-
-  const displayedHistory = getFilteredHistoryItems();
 
   return (
     <div className={`min-h-screen font-sans transition-colors duration-300 ${theme.bg} ${theme.text}`}>
-      {/* 設定檔警告 */}
       {!dbReady && (
-        <div className="bg-red-600 text-white p-2 text-center text-sm font-bold">
-           尚未設定 Firebase API Key，請打開程式碼填入 firebaseConfig 物件！
+        <div className="bg-red-600 text-white p-2 text-center text-sm font-bold sticky top-0 z-50">
+           尚未初始化 Firebase，請檢查金鑰設定！
         </div>
       )}
 
       {/* 頂部導航 */}
-      <nav className={`${theme.nav} text-white p-4 shadow-lg sticky top-0 z-20 transition-colors duration-300`}>
-        <div className="max-w-7xl mx-auto flex justify-between items-center">
+      <nav className={`${theme.nav} text-white px-4 py-3 shadow-lg sticky top-0 z-40`}>
+        <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-4">
           <div className="flex items-center gap-3">
              <div className="bg-blue-500 p-2 rounded-lg">
-                <Calculator size={24} className="text-white" />
+                {currentTab === 'ACCOUNTING' ? <Calculator size={24} className="text-white" /> : <ShieldAlert size={24} className="text-white" />}
              </div>
-             <h1 className="text-2xl font-bold tracking-wider">團隊記帳表</h1>
+             <h1 className="text-2xl font-bold tracking-wider hidden md:block">
+               {currentTab === 'ACCOUNTING' ? '團隊記帳表' : 'Boss 重生計時'}
+             </h1>
+             {/* 手機版標題切換 */}
+             <div className="flex md:hidden bg-gray-700 rounded-lg p-1">
+                <button onClick={()=>setCurrentTab('ACCOUNTING')} className={`px-3 py-1 rounded ${currentTab==='ACCOUNTING'?'bg-blue-600 text-white':'text-gray-300'}`}>記帳</button>
+                <button onClick={()=>setCurrentTab('BOSS_TIMER')} className={`px-3 py-1 rounded ${currentTab==='BOSS_TIMER'?'bg-purple-600 text-white':'text-gray-300'}`}>Boss</button>
+             </div>
           </div>
-          <div className="flex gap-3">
-            <button 
-              onClick={() => setIsDarkMode(!isDarkMode)}
-              className="p-2 rounded-full hover:bg-white/10 transition-colors"
-            >
+
+          <div className="flex gap-3 items-center">
+            {/* 電腦版分頁按鈕 */}
+            <div className="hidden md:flex gap-2 mr-4 bg-gray-700/50 p-1 rounded-lg">
+               <button 
+                 onClick={() => setCurrentTab('ACCOUNTING')}
+                 className={`flex items-center gap-2 px-4 py-1.5 rounded-md transition-all ${currentTab === 'ACCOUNTING' ? 'bg-blue-600 text-white shadow' : 'hover:bg-white/10 text-gray-300'}`}
+               >
+                 <Calculator size={16}/> 團隊記帳
+               </button>
+               <button 
+                 onClick={() => setCurrentTab('BOSS_TIMER')}
+                 className={`flex items-center gap-2 px-4 py-1.5 rounded-md transition-all ${currentTab === 'BOSS_TIMER' ? 'bg-purple-600 text-white shadow' : 'hover:bg-white/10 text-gray-300'}`}
+               >
+                 <ShieldAlert size={16}/> Boss 時間
+               </button>
+            </div>
+
+            <button onClick={() => setIsDarkMode(!isDarkMode)} className="p-2 rounded-full hover:bg-white/10 transition-colors">
               {isDarkMode ? <Sun size={20} className="text-yellow-300" /> : <Moon size={20} />}
-            </button>
-            <button 
-               onClick={() => setShowHistory(!showHistory)}
-               className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${
-                 showHistory ? 'bg-white/20 text-white' : 'hover:bg-white/10 text-slate-300'
-               }`}
-            >
-              <History size={18} />
-              {showHistory ? '返回列表' : '歷史紀錄'}
-            </button>
-            <button 
-              onClick={() => setIsModalOpen(true)}
-              className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg shadow-lg shadow-blue-900/50 transition-all transform hover:scale-105 active:scale-95"
-            >
-              <Plus size={20} />
-              <span className="hidden sm:inline">新增項目</span>
             </button>
           </div>
         </div>
       </nav>
 
-      <main className="max-w-7xl mx-auto p-4 md:p-6">
-        {!showHistory && (
-           <div className="mb-6 flex items-center justify-between">
-              <h2 className={`text-xl font-bold border-l-4 border-blue-500 pl-3 ${isDarkMode ? 'text-gray-200' : 'text-slate-700'}`}>目前進行中項目 ({items.length})</h2>
-           </div>
+      {/* 主內容區塊 */}
+      <main className="relative">
+        {currentTab === 'ACCOUNTING' ? (
+          <AccountingView isDarkMode={isDarkMode} dbReady={dbReady} />
+        ) : (
+          <BossTimerView isDarkMode={isDarkMode} />
         )}
-
-        {showHistory && (
-           <div className="space-y-4 mb-6">
-              <div className="flex items-center justify-between">
-                <h2 className={`text-xl font-bold border-l-4 border-gray-500 pl-3 ${isDarkMode ? 'text-gray-200' : 'text-slate-700'}`}>歷史歸檔紀錄 ({displayedHistory.length})</h2>
-              </div>
-              <div className={`p-4 rounded-xl shadow-sm flex flex-wrap items-end gap-4 ${isDarkMode ? 'bg-gray-800' : 'bg-white'}`}>
-                <div className="flex-1 min-w-[200px] space-y-1">
-                  <label className={`text-xs font-medium ${theme.subText} flex items-center gap-1`}>
-                    <Search size={12}/> 搜尋物品名稱
-                  </label>
-                  <input 
-                    type="text" 
-                    placeholder="輸入關鍵字..."
-                    className={`w-full p-2 rounded border outline-none focus:ring-2 focus:ring-blue-500 ${theme.input}`}
-                    value={historyFilter.name}
-                    onChange={(e) => setHistoryFilter({...historyFilter, name: e.target.value})}
-                  />
-                </div>
-                <div className="flex-1 min-w-[200px] flex gap-2">
-                  <div className="flex-1 space-y-1">
-                     <label className={`text-xs font-medium ${theme.subText} flex items-center gap-1`}>
-                        <Filter size={12}/> 日期篩選類型
-                     </label>
-                     <select 
-                        className={`w-full p-2 rounded border outline-none focus:ring-2 focus:ring-blue-500 ${theme.input}`}
-                        value={historyFilter.dateType}
-                        onChange={(e) => setHistoryFilter({...historyFilter, dateType: e.target.value})}
-                     >
-                       <option value="created">建立時間</option>
-                       <option value="settled">結算時間</option>
-                     </select>
-                  </div>
-                  <div className="flex-1 space-y-1">
-                     <label className={`text-xs font-medium ${theme.subText} flex items-center gap-1`}>
-                        <Calendar size={12}/> 選擇日期
-                     </label>
-                     <input 
-                       type="date"
-                       className={`w-full p-2 rounded border outline-none focus:ring-2 focus:ring-blue-500 ${theme.input}`}
-                       value={historyFilter.date}
-                       onChange={(e) => setHistoryFilter({...historyFilter, date: e.target.value})}
-                     />
-                  </div>
-                </div>
-                <button 
-                  onClick={clearHistoryFilter}
-                  className={`p-2.5 rounded hover:bg-red-500 hover:text-white transition-colors ${isDarkMode ? 'bg-gray-700 text-gray-300' : 'bg-gray-100 text-gray-500'}`}
-                >
-                  <X size={20} />
-                </button>
-              </div>
-           </div>
-        )}
-
-        <div className="space-y-6">
-          {showHistory ? (
-             displayedHistory.length > 0 ? (
-              displayedHistory.map(item => (
-                 <ItemCard 
-                   key={item.id} 
-                   item={item} 
-                   isHistory={true}
-                   theme={theme}
-                   isDarkMode={isDarkMode}
-                   handleDelete={handleDeleteHistory}
-                   confirmDeleteId={confirmDeleteId}
-                   setConfirmDeleteId={setConfirmDeleteId}
-                   setConfirmSettleId={setConfirmSettleId}
-                 />
-               ))
-             ) : (
-               <div className={`text-center py-20 rounded-xl shadow-sm ${theme.card} ${theme.subText}`}>
-                 {historyItems.length > 0 ? (
-                   <>
-                     <Search size={48} className="mx-auto mb-4 opacity-30" />
-                     <p>沒有符合搜尋條件的紀錄</p>
-                     <button onClick={clearHistoryFilter} className="text-blue-500 hover:underline mt-2">清除篩選</button>
-                   </>
-                 ) : (
-                   <>
-                     <History size={48} className="mx-auto mb-4 opacity-30" />
-                     <p>尚無歷史紀錄</p>
-                   </>
-                 )}
-               </div>
-             )
-          ) : (
-             items.length > 0 ? (
-               items.map(item => (
-                 <ItemCard 
-                   key={item.id} 
-                   item={item} 
-                   theme={theme}
-                   isDarkMode={isDarkMode}
-                   updateItemValue={updateItemValue}
-                   toggleParticipantSettled={toggleParticipantSettled}
-                   handleSettleAll={handleSettleAll}
-                   handleDelete={handleDelete}
-                   confirmSettleId={confirmSettleId}
-                   setConfirmSettleId={setConfirmSettleId}
-                   confirmDeleteId={confirmDeleteId}
-                   setConfirmDeleteId={setConfirmDeleteId}
-                 />
-               ))
-             ) : (
-               <div className={`text-center py-20 rounded-xl shadow-sm border border-dashed ${isDarkMode ? 'border-gray-700 bg-gray-800' : 'border-gray-300 bg-white'} ${theme.subText}`}>
-                 <div className={`w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-4 ${isDarkMode ? 'bg-gray-700' : 'bg-slate-50'}`}>
-                    <Plus size={32} className="opacity-30" />
-                 </div>
-                 <p className="text-lg">目前沒有進行中的記帳項目</p>
-                 <button 
-                   onClick={() => setIsModalOpen(true)}
-                   className="mt-4 text-blue-500 hover:underline"
-                 >
-                   立即新增一筆
-                 </button>
-               </div>
-             )
-          )}
-        </div>
       </main>
-
-      {/* 新增項目 Modal */}
-      {isModalOpen && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className={`${isDarkMode ? 'bg-gray-800 text-white' : 'bg-white text-gray-800'} rounded-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto shadow-2xl animate-scaleIn transition-colors`}>
-            <div className={`sticky top-0 px-6 py-4 border-b flex justify-between items-center z-10 ${isDarkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-100'}`}>
-              <h3 className="text-xl font-bold">建立新記帳項目</h3>
-              <button onClick={() => setIsModalOpen(false)} className={`p-2 rounded-full transition-colors ${isDarkMode ? 'hover:bg-gray-700 text-gray-400' : 'hover:bg-gray-100 text-gray-500'}`}>
-                <X size={24} />
-              </button>
-            </div>
-            
-            <div className="p-6 space-y-6">
-              {/* Row 1: 販賣人 & 價格 */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div className="space-y-2">
-                  <label className={`text-sm font-medium block ${theme.subText}`}>販賣人</label>
-                  <select 
-                    className={`w-full p-3 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none ${theme.input}`}
-                    value={formData.seller}
-                    onChange={(e) => setFormData({...formData, seller: e.target.value})}
-                  >
-                    {MEMBERS.map(m => <option key={m} value={m}>{m}</option>)}
-                  </select>
-                </div>
-                <div className="space-y-2">
-                  <label className={`text-sm font-medium block ${theme.subText}`}>販售價格</label>
-                  <input 
-                    type="number" 
-                    placeholder="輸入金額..."
-                    className={`w-full p-3 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none ${theme.input}`}
-                    value={formData.price}
-                    onChange={(e) => setFormData({...formData, price: e.target.value})}
-                  />
-                </div>
-              </div>
-
-              {/* Row 2: 物品名稱 & 刊登次數 */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div className="space-y-2">
-                  <label className={`text-sm font-medium block ${theme.subText}`}>物品名稱</label>
-                  <input 
-                    type="text" 
-                    placeholder="例如：高級水晶..."
-                    className={`w-full p-3 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none ${theme.input}`}
-                    value={formData.itemName}
-                    onChange={(e) => setFormData({...formData, itemName: e.target.value})}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className={`text-sm font-medium block ${theme.subText}`}>刊登次數 (收取 {formData.listingCount * 2}% 手續費)</label>
-                  <div className="flex items-center gap-4">
-                     <button 
-                       onClick={() => setFormData({...formData, listingCount: Math.max(1, formData.listingCount - 1)})}
-                       className={`w-10 h-10 rounded-lg flex items-center justify-center font-bold text-xl ${isDarkMode ? 'bg-gray-700 hover:bg-gray-600' : 'bg-gray-100 hover:bg-gray-200'}`}
-                     >
-                       -
-                     </button>
-                     <input 
-                       type="number" 
-                       min="1"
-                       className={`flex-1 p-3 text-center rounded-lg focus:ring-2 focus:ring-blue-500 outline-none ${theme.input}`}
-                       value={formData.listingCount}
-                       onChange={(e) => setFormData({...formData, listingCount: parseInt(e.target.value) || 1})}
-                     />
-                     <button 
-                       onClick={() => setFormData({...formData, listingCount: formData.listingCount + 1})}
-                       className={`w-10 h-10 rounded-lg flex items-center justify-center font-bold text-xl ${isDarkMode ? 'bg-gray-700 hover:bg-gray-600' : 'bg-gray-100 hover:bg-gray-200'}`}
-                     >
-                       +
-                     </button>
-                  </div>
-                </div>
-              </div>
-
-              {/* Row 3: 交易所類型 */}
-               <div className="space-y-2">
-                  <label className={`text-sm font-medium block ${theme.subText}`}>交易所類型</label>
-                  <div className={`flex gap-4 p-1 rounded-lg ${isDarkMode ? 'bg-gray-700' : 'bg-gray-100'}`}>
-                    {Object.keys(EXCHANGE_TYPES).map((typeKey) => (
-                      <button
-                        key={typeKey}
-                        onClick={() => setFormData({...formData, exchangeType: typeKey})}
-                        className={`flex-1 py-2 rounded-md text-sm font-medium transition-all ${
-                          formData.exchangeType === typeKey 
-                            ? `${isDarkMode ? 'bg-gray-600 text-blue-300' : 'bg-white text-blue-600'} shadow-sm` 
-                            : `${isDarkMode ? 'text-gray-400 hover:text-gray-200' : 'text-gray-500 hover:text-gray-700'}`
-                        }`}
-                      >
-                        {EXCHANGE_TYPES[typeKey].label} (稅 {(EXCHANGE_TYPES[typeKey].tax * 100 + formData.listingCount * 2).toFixed(0)}%)
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-              {/* Row 4: 參與人員 */}
-              <div className={`space-y-2 border-t pt-4 ${isDarkMode ? 'border-gray-700' : 'border-gray-100'}`}>
-                <label className={`text-sm font-medium flex justify-between items-center ${theme.subText}`}>
-                  <span>參與人員清單</span>
-                  <span className={`text-xs px-2 py-1 rounded ${isDarkMode ? 'bg-blue-900 text-blue-200' : 'bg-blue-50 text-blue-500'}`}>目前: {formData.participants.length} 人</span>
-                </label>
-                
-                <div className="flex gap-2">
-                  <select 
-                     className={`flex-1 p-2 rounded-lg ${theme.input}`}
-                     value={tempParticipant}
-                     onChange={(e) => setTempParticipant(e.target.value)}
-                  >
-                     {MEMBERS.map(m => <option key={m} value={m}>{m}</option>)}
-                  </select>
-                  <button 
-                    onClick={addParticipantToForm}
-                    className="bg-green-500 hover:bg-green-600 text-white p-2 rounded-lg flex items-center justify-center w-12 transition-colors"
-                  >
-                    <Plus size={20} />
-                  </button>
-                </div>
-
-                <div className={`flex flex-wrap gap-2 mt-3 min-h-[50px] p-3 rounded-lg border border-dashed ${isDarkMode ? 'bg-gray-700/50 border-gray-600' : 'bg-gray-50 border-gray-300'}`}>
-                  {formData.participants.length === 0 && <span className={`text-sm ${theme.subText}`}>尚未新增參與人員...</span>}
-                  {formData.participants.map((p, idx) => (
-                    <span key={idx} className={`px-3 py-1 rounded-full text-sm flex items-center gap-2 shadow-sm ${isDarkMode ? 'bg-gray-600 text-gray-200 border-gray-500' : 'bg-white border-gray-200 text-gray-700 border'}`}>
-                      {p}
-                      <button 
-                        onClick={() => removeParticipantFromForm(p)}
-                        className="text-gray-400 hover:text-red-500"
-                      >
-                        <X size={14} />
-                      </button>
-                    </span>
-                  ))}
-                </div>
-              </div>
-
-              {formData.price && (
-                <div className={`p-4 rounded-lg flex items-center justify-between text-sm border ${isDarkMode ? 'bg-indigo-900/30 border-indigo-800 text-indigo-300' : 'bg-indigo-50 border-indigo-100 text-indigo-900'}`}>
-                  <div className="flex flex-col">
-                     <span className="opacity-70">預計每人收益:</span>
-                     <span className="font-bold text-lg">
-                        ${calculateFinance(formData.price, formData.exchangeType, formData.participants.length, formData.listingCount).perPersonSplit.toLocaleString()}
-                     </span>
-                  </div>
-                  <ArrowRight className="opacity-30" />
-                   <div className="flex flex-col text-right">
-                     <span className="opacity-70">稅後總額:</span>
-                     <span className="font-bold">
-                        ${calculateFinance(formData.price, formData.exchangeType, formData.participants.length, formData.listingCount).afterTaxPrice.toLocaleString()}
-                     </span>
-                  </div>
-                </div>
-              )}
-
-            </div>
-
-            <div className={`p-6 border-t rounded-b-2xl flex justify-end gap-3 ${isDarkMode ? 'bg-gray-700/50 border-gray-700' : 'bg-gray-50 border-gray-100'}`}>
-              <button 
-                onClick={() => setIsModalOpen(false)}
-                className={`px-6 py-2 rounded-lg font-medium transition-colors ${isDarkMode ? 'text-gray-300 hover:bg-gray-700' : 'text-gray-600 hover:bg-gray-200'}`}
-              >
-                取消
-              </button>
-              <button 
-                onClick={handleAddItem}
-                className="px-6 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 shadow-lg shadow-blue-900/50 font-medium transition-colors"
-              >
-                建立項目
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-      
-      <style>{`
-        @keyframes fadeIn {
-          from { opacity: 0; transform: translateY(10px); }
-          to { opacity: 1; transform: translateY(0); }
-        }
-        @keyframes scaleIn {
-          from { opacity: 0; transform: scale(0.95); }
-          to { opacity: 1; transform: scale(1); }
-        }
-        .animate-fadeIn { animation: fadeIn 0.3s ease-out forwards; }
-        .animate-scaleIn { animation: scaleIn 0.2s ease-out forwards; }
-        ::-webkit-scrollbar { width: 8px; }
-        ::-webkit-scrollbar-track { background: ${isDarkMode ? '#1f2937' : '#f1f5f9'}; }
-        ::-webkit-scrollbar-thumb { background: ${isDarkMode ? '#4b5563' : '#cbd5e1'}; border-radius: 4px; }
-        ::-webkit-scrollbar-thumb:hover { background: ${isDarkMode ? '#6b7280' : '#94a3b8'}; }
-      `}</style>
     </div>
   );
 }
