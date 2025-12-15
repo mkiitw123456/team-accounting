@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   Plus, Check, X, History, Calculator, Wallet, 
-  Sun, Moon, Edit3, Trash2, Clock, Skull, List, Tag, ShieldAlert, RefreshCw, Map as MapIcon, MapPin, ArrowRightLeft, CheckCircle, Grid, Save, Minus
+  Sun, Moon, Edit3, Trash2, Clock, Skull, List, Tag, ShieldAlert, RefreshCw, Map as MapIcon, MapPin, ArrowRightLeft, CheckCircle, Grid, Save, Minus, Wand2, Zap, RefreshCcw
 } from 'lucide-react';
 
 // === Firebase 引入 ===
@@ -11,7 +11,24 @@ import {
 } from "firebase/firestore";
 
 // === 版本號設定 ===
-const APP_VERSION = "1214v8-ListingHistory-GridFix";
+const APP_VERSION = "1215v6-addDiscordBot";
+
+// === Discord Webhook 設定 (請在此填入您的網址) ===
+const DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1450050856094535745/0dvodClTjDzQEc_t5z_cCXNjPTF2wCyilpcWtJJNyX0xGhp4lYcRYOgzOam1IWT9Zqgo"; 
+
+// === Discord 通知輔助函式 ===
+const sendDiscordMessage = async (message) => {
+  if (!DISCORD_WEBHOOK_URL) return;
+  try {
+    await fetch(DISCORD_WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: message }),
+    });
+  } catch (error) {
+    console.error("Discord 通知發送失敗", error);
+  }
+};
 
 // === Firebase 設定檔 ===
 const firebaseConfig = {
@@ -137,24 +154,35 @@ const calculateFinance = (price, typeKey, participantCount, manualCost = 0, list
   const cost = parseFloat(manualCost) || 0;
   const typeTax = EXCHANGE_TYPES[typeKey]?.tax || 0;
   
-  // 稅金 = 售價 * 稅率
   const taxAmount = p * typeTax;
 
-  // 計算所有刊登費總和
   const totalListingFee = listingHistory.reduce((sum, listingPrice) => {
       return sum + Math.floor((parseFloat(listingPrice) || 0) * BASE_LISTING_FEE_PERCENT);
   }, 0);
   
-  // 淨利 = 售價 - 稅金 - 額外成本 - 總刊登費
   const netIncome = Math.floor(p - taxAmount - cost - totalListingFee);
   
   const count = participantCount > 0 ? participantCount : 1;
   
-  // 每人分紅: 萬後面的數字都是0 (無條件捨去至萬位)
   let rawSplit = Math.floor(netIncome / count);
   const perPersonSplit = Math.floor(rawSplit / 10000) * 10000;
 
   return { afterTaxPrice: netIncome, perPersonSplit, taxAmount, cost, totalListingFee };
+};
+
+// ==========================================
+// Component: ToastNotification (無干擾提示)
+// ==========================================
+const ToastNotification = ({ message, isVisible }) => {
+  return (
+    <div className={`fixed top-4 left-1/2 transform -translate-x-1/2 z-[70] transition-all duration-300 pointer-events-none
+      ${isVisible ? 'translate-y-0 opacity-100' : '-translate-y-10 opacity-0'}`}>
+      <div className="bg-green-600 text-white px-6 py-2 rounded-full shadow-lg font-bold flex items-center gap-2">
+        <CheckCircle size={18} />
+        {message}
+      </div>
+    </div>
+  );
 };
 
 // ==========================================
@@ -167,7 +195,6 @@ const BalanceGrid = ({ isOpen, onClose, theme, isDarkMode }) => {
   useEffect(() => {
     if (!isOpen || !db) return;
     
-    // 監聽 settlement_data/main_grid 文件
     const unsub = onSnapshot(doc(db, "settlement_data", "main_grid"), (doc) => {
       if (doc.exists()) {
         setGridData(doc.data().matrix || {});
@@ -180,16 +207,20 @@ const BalanceGrid = ({ isOpen, onClose, theme, isDarkMode }) => {
   }, [isOpen]);
 
   const handleCellChange = async (payer, receiver, value) => {
-    // 樂觀更新 (UI先變)
     const key = `${payer}_${receiver}`;
     const newValue = parseFloat(value) || 0;
     
+    // 只有當值真的改變時才發送通知，避免誤觸
+    if (gridData[key] !== newValue) {
+        const msg = `📝 [帳務修改] ${payer} 對 ${receiver} 的欠款已手動修改為 $${newValue.toLocaleString()}`;
+        sendDiscordMessage(msg);
+    }
+
     setGridData(prev => ({
       ...prev,
       [key]: newValue
     }));
 
-    // 寫入資料庫
     if (db) {
        await setDoc(doc(db, "settlement_data", "main_grid"), {
          matrix: { ...gridData, [key]: newValue }
@@ -197,9 +228,72 @@ const BalanceGrid = ({ isOpen, onClose, theme, isDarkMode }) => {
     }
   };
 
+  const handleAutoBalance = async () => {
+    if (!db) return;
+    if (!window.confirm("確定要執行「自動劃帳」嗎？\n這將會重新計算並覆蓋目前的表格，將所有複雜的債務簡化為最少筆數。")) return;
+
+    const netBalances = {};
+    MEMBERS.forEach(m => netBalances[m] = 0);
+
+    MEMBERS.forEach(payer => {
+      MEMBERS.forEach(receiver => {
+        if (payer === receiver) return;
+        const amount = parseFloat(gridData[`${payer}_${receiver}`]) || 0;
+        netBalances[payer] -= amount; 
+        netBalances[receiver] += amount; 
+      });
+    });
+
+    let debtors = []; 
+    let creditors = []; 
+
+    MEMBERS.forEach(m => {
+      const balance = netBalances[m];
+      if (balance < -1) { 
+        debtors.push({ name: m, balance: Math.abs(balance) }); 
+      } else if (balance > 1) {
+        creditors.push({ name: m, balance: balance });
+      }
+    });
+
+    debtors.sort((a, b) => b.balance - a.balance);
+    creditors.sort((a, b) => b.balance - a.balance);
+
+    const newMatrix = {};
+    let dIndex = 0;
+    let cIndex = 0;
+
+    while (dIndex < debtors.length && cIndex < creditors.length) {
+      let debtor = debtors[dIndex];
+      let creditor = creditors[cIndex];
+
+      let settleAmount = Math.min(debtor.balance, creditor.balance);
+      
+      const key = `${debtor.name}_${creditor.name}`;
+      newMatrix[key] = (newMatrix[key] || 0) + settleAmount;
+
+      debtor.balance -= settleAmount;
+      creditor.balance -= settleAmount;
+
+      if (debtor.balance < 1) dIndex++;
+      if (creditor.balance < 1) cIndex++;
+    }
+
+    try {
+      await setDoc(doc(db, "settlement_data", "main_grid"), {
+        matrix: newMatrix
+      }, { merge: false });
+      
+      sendDiscordMessage("⚖️ [系統公告] 已執行「自動劃帳」，全域債務已完成簡化。");
+      alert("劃帳完成！債務已簡化。");
+    } catch (e) {
+      console.error("Auto balance failed", e);
+      alert("劃帳失敗，請稍後再試。");
+    }
+  };
+
   if (!isOpen) return null;
 
-  // 定義表格樣式
   const tableStyles = {
       headerCell: isDarkMode ? 'bg-gray-700 text-gray-200 border-gray-600' : 'bg-gray-100 text-gray-700 border-gray-300',
       headerCellSticky: isDarkMode ? 'bg-gray-800 text-gray-200 border-gray-600' : 'bg-gray-50 text-gray-700 border-gray-300',
@@ -219,9 +313,18 @@ const BalanceGrid = ({ isOpen, onClose, theme, isDarkMode }) => {
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50 overflow-auto">
       <div className={`w-full max-w-6xl rounded-xl p-6 h-[90vh] flex flex-col ${theme.card}`}>
         <div className={`flex justify-between items-center mb-4 border-b pb-2 ${isDarkMode ? 'border-gray-700' : 'border-gray-200'}`}>
-          <h3 className={`text-xl font-bold flex items-center gap-2 ${theme.text}`}>
-            <Grid size={24}/> 成員餘額表 (Excel 模式)
-          </h3>
+          <div className="flex items-center gap-4">
+            <h3 className={`text-xl font-bold flex items-center gap-2 ${theme.text}`}>
+              <Grid size={24}/> 成員餘額表 (Excel 模式)
+            </h3>
+            <button 
+              onClick={handleAutoBalance}
+              className="flex items-center gap-2 px-3 py-1 text-sm bg-purple-600 text-white rounded hover:bg-purple-700 shadow transition-colors"
+              title="重新計算並簡化所有債務"
+            >
+              <Wand2 size={16}/> 自動劃帳
+            </button>
+          </div>
           <button onClick={onClose} className={`p-1 rounded ${isDarkMode ? 'hover:bg-gray-700 text-gray-400' : 'hover:bg-gray-200 text-gray-500'}`}><X size={24}/></button>
         </div>
 
@@ -273,7 +376,6 @@ const BalanceGrid = ({ isOpen, onClose, theme, isDarkMode }) => {
                      </tr>
                    );
                  })}
-                 {/* 統計列 */}
                  <tr className={tableStyles.incomeLabel}>
                     <td className={`p-2 border text-right sticky left-0 z-10 ${tableStyles.incomeHeader}`}>預定收入</td>
                     {MEMBERS.map(receiver => {
@@ -292,8 +394,92 @@ const BalanceGrid = ({ isOpen, onClose, theme, isDarkMode }) => {
            )}
         </div>
         <div className={`mt-2 text-xs ${theme.subText}`}>
-           * 說明：橫列為「付款人(販賣者)」，直欄為「收款人」。例如：[水野] 這一列對應 [Wolf] 的格子是 100，代表「水野欠 Wolf 100 元」。
-           <br/>* 修改數字後，點擊其他地方(失去焦點)即會自動儲存。
+           * 說明：表格數字代表「付款人」欠「收款人」的金額。
+           <br/>* 點擊「自動劃帳」會自動將目前表格內所有債務簡化，讓轉帳次數最小化。
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ==========================================
+// Component: QuickTagPanel (快速標籤面板)
+// ==========================================
+const QuickTagPanel = ({ 
+  isOpen, onClose, bossTemplates, handleAddQuickRecord, isDarkMode, theme 
+}) => {
+  if (!isOpen) return null;
+
+  return (
+    <div className={`fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm`}>
+      <div className={`w-full max-w-5xl h-[85vh] rounded-xl flex flex-col relative shadow-2xl border-2 ${isDarkMode ? 'bg-gray-900 border-gray-700' : 'bg-white border-white'}`}>
+        
+        {/* Header */}
+        <div className={`p-4 border-b flex justify-between items-center ${isDarkMode ? 'border-gray-700' : 'border-gray-200'}`}>
+          <h3 className={`text-xl font-bold flex items-center gap-2 ${theme.text}`}>
+            <Zap size={24} className="text-yellow-500"/> 快速標籤 (點擊即紀錄)
+          </h3>
+          <button onClick={onClose} className="p-2 rounded-full hover:bg-red-500 hover:text-white transition-colors">
+            <X size={24} />
+          </button>
+        </div>
+
+        {/* Content */}
+        <div className="flex-1 flex flex-col lg:flex-row overflow-hidden">
+          
+          {/* Left: Map */}
+          <div className={`flex-1 relative overflow-hidden flex items-center justify-center ${isDarkMode ? 'bg-gray-800' : 'bg-gray-100'}`}>
+             <div className="relative w-auto h-auto max-w-full max-h-full" style={{ aspectRatio: '1152/851' }}>
+                <img src={MAP_IMAGE_PATH} alt="Map" className="w-full h-full block pointer-events-none opacity-80" />
+                
+                {bossTemplates.filter(t => t.mapPos).map((template, idx) => (
+                  <div 
+                    key={template.id}
+                    onClick={() => handleAddQuickRecord(template)}
+                    className="absolute transform -translate-x-1/2 -translate-y-1/2 cursor-pointer group hover:scale-110 transition-transform z-10"
+                    style={{ left: `${template.mapPos.x}%`, top: `${template.mapPos.y}%` }}
+                    title={`點擊紀錄: ${template.name}`}
+                  >
+                    <div className="relative">
+                      <div className="w-4 h-4 rounded-full border-2 border-white shadow-sm" style={{ backgroundColor: template.color }}></div>
+                      {/* Name Label */}
+                      <div className={`absolute top-5 left-1/2 -translate-x-1/2 text-[10px] px-1.5 py-0.5 rounded whitespace-nowrap font-bold shadow-md
+                        ${isDarkMode ? 'bg-black/80 text-white' : 'bg-white/90 text-gray-800'}`}>
+                        {template.name}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+             </div>
+             <div className="absolute bottom-4 left-4 text-xs opacity-50 bg-black/30 px-2 py-1 rounded text-white pointer-events-none">
+               * 點擊地圖上的點或右側列表皆可快速紀錄
+             </div>
+          </div>
+
+          {/* Right: List */}
+          <div className={`w-full lg:w-72 border-l overflow-y-auto ${isDarkMode ? 'border-gray-700 bg-gray-900' : 'border-gray-200 bg-white'}`}>
+            <div className="p-3">
+              <h4 className={`text-sm font-bold mb-3 opacity-70 ${theme.text}`}>Boss 列表</h4>
+              <div className="space-y-2">
+                {bossTemplates.map(template => (
+                  <button
+                    key={template.id}
+                    onClick={() => handleAddQuickRecord(template)}
+                    className={`w-full text-left p-2 rounded flex items-center gap-2 transition-all active:scale-95
+                      ${isDarkMode ? 'hover:bg-gray-800 border border-gray-700' : 'hover:bg-gray-50 border border-gray-100 shadow-sm'}`}
+                  >
+                    <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: template.color }}></div>
+                    <div className="flex-1 min-w-0">
+                      <div className={`font-bold text-sm truncate ${theme.text}`}>{template.name}</div>
+                      <div className={`text-xs opacity-60 ${theme.text}`}>CD: {template.respawnMinutes}m</div>
+                    </div>
+                    <Plus size={16} className="opacity-40"/>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
         </div>
       </div>
     </div>
@@ -308,14 +494,12 @@ const ItemCard = ({
   updateItemValue, handleSettleAll, handleDelete,
   confirmSettleId, setConfirmSettleId, confirmDeleteId, setConfirmDeleteId
 }) => {
-  // item.listingHistory 是一個陣列，存儲每次刊登的價格
   const listingHistory = item.listingHistory || [];
   
   const { afterTaxPrice, perPersonSplit, totalListingFee } = calculateFinance(
     item.price, item.exchangeType, item.participants?.length || 0, item.cost, listingHistory
   );
 
-  // 新增一個刊登價格到歷史紀錄
   const addListingPrice = () => {
       const newPrice = prompt("請輸入該次刊登的「物品價格」(系統將自動計算2%):", item.price);
       if (newPrice) {
@@ -327,7 +511,6 @@ const ItemCard = ({
       }
   };
 
-  // 移除某一筆刊登紀錄
   const removeListingPrice = (index) => {
       const newHistory = listingHistory.filter((_, i) => i !== index);
       updateItemValue(item.id, 'listingHistory', newHistory);
@@ -549,7 +732,6 @@ const AccountingView = ({ isDarkMode, dbReady }) => {
   
   const [historyFilter, setHistoryFilter] = useState({ name: '', date: '', dateType: 'created' });
   
-  // 初始化時預設包含所有成員
   const [formData, setFormData] = useState({
     seller: MEMBERS[0], itemName: '', price: '', cost: 0, exchangeType: 'GENERAL', participants: [...MEMBERS] 
   });
@@ -576,7 +758,7 @@ const AccountingView = ({ isDarkMode, dbReady }) => {
     const newItem = {
       ...formData,
       cost: parseFloat(formData.cost) || 0,
-      listingHistory: [], // 初始無刊登歷史
+      listingHistory: [], 
       participants: finalParticipants.map(p => ({ name: p })),
       isSold: false, createdAt: new Date().toISOString(), settledAt: null 
     };
@@ -595,7 +777,6 @@ const AccountingView = ({ isDarkMode, dbReady }) => {
     if (!db) return;
 
     try {
-      // 1. 使用 Transaction 更新餘額表 (保證多筆同時操作不會亂)
       await runTransaction(db, async (transaction) => {
         const gridRef = doc(db, "settlement_data", "main_grid");
         const gridDoc = await transaction.get(gridRef);
@@ -609,7 +790,7 @@ const AccountingView = ({ isDarkMode, dbReady }) => {
         
         item.participants.forEach(p => {
           if (p.name !== seller) {
-            const key = `${seller}_${p.name}`; // 賣家_買家 (代表賣家欠買家多少分紅)
+            const key = `${seller}_${p.name}`; 
             const currentVal = parseFloat(matrix[key]) || 0;
             matrix[key] = currentVal + perPersonSplit;
           }
@@ -618,11 +799,14 @@ const AccountingView = ({ isDarkMode, dbReady }) => {
         transaction.set(gridRef, { matrix }, { merge: true });
       });
 
-      // 2. 移動項目到歷史紀錄
       await addDoc(collection(db, "history_items"), { ...item, settledAt: new Date().toISOString() });
       await deleteDoc(doc(db, "active_items", item.id));
       
       setConfirmSettleId(null);
+      
+      const msg = `💰 [出售通知] \n**${item.seller}** 成功出售了 **${item.itemName}**！\n每人分紅: **$${perPersonSplit.toLocaleString()}**\n(已自動計入餘額表)`;
+      sendDiscordMessage(msg);
+
       alert(`已出售！每人分紅 $${perPersonSplit} 已加入餘額表。`);
 
     } catch (e) {
@@ -674,7 +858,6 @@ const AccountingView = ({ isDarkMode, dbReady }) => {
           {showHistory ? `歷史紀錄 (${filteredHistory.length})` : `進行中項目 (${items.length})`}
         </h2>
         <div className="flex gap-2">
-          {/* 按鈕文字改成 餘額表 */}
           <button 
             onClick={() => setIsBalanceGridOpen(true)}
             className="flex items-center gap-2 px-3 py-2 rounded bg-purple-600 text-white shadow hover:bg-purple-700"
@@ -763,9 +946,12 @@ const BossTimerView = ({ isDarkMode }) => {
   const [bossTemplates, setBossTemplates] = useState([]);
   const [bossEvents, setBossEvents] = useState([]);
   const [now, setNow] = useState(new Date()); 
+  const [toastMsg, setToastMsg] = useState(null); // Toast Message State
   
   const [isCreateBossModalOpen, setIsCreateBossModalOpen] = useState(false);
   const [isAddRecordModalOpen, setIsAddRecordModalOpen] = useState(false);
+  const [isQuickTagOpen, setIsQuickTagOpen] = useState(false); // Quick Tag State
+
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
   const [editingBossId, setEditingBossId] = useState(null);
   const [editingEventId, setEditingEventId] = useState(null);
@@ -804,6 +990,71 @@ const BossTimerView = ({ isDarkMode }) => {
     }, 1000); 
     return () => clearInterval(timer);
   }, [bossEvents]); 
+
+  // === 同步地圖位置邏輯 ===
+  const handleSyncMapPositions = async () => {
+    if (!db) return;
+    if (!window.confirm("這將會根據目前的 Boss 設定，更新所有進行中計時的地圖位置。\n確定要執行嗎？")) return;
+
+    const batch = writeBatch(db);
+    let updateCount = 0;
+
+    bossEvents.forEach(event => {
+      const template = bossTemplates.find(t => t.id === event.templateId);
+      if (template && template.mapPos) {
+        // 如果目前位置不存在，或位置與模板設定不符，就更新
+        if (!event.mapPos || event.mapPos.x !== template.mapPos.x || event.mapPos.y !== template.mapPos.y) {
+           const docRef = doc(db, "boss_events", event.id);
+           batch.update(docRef, { mapPos: template.mapPos });
+           updateCount++;
+        }
+      }
+    });
+
+    if (updateCount > 0) {
+      try {
+        await batch.commit();
+        alert(`已更新 ${updateCount} 筆計時的地圖位置！`);
+      } catch (e) {
+        console.error("Batch update failed", e);
+        alert("更新失敗，請稍後再試");
+      }
+    } else {
+      alert("目前所有計時的位置皆為最新。");
+    }
+  };
+
+  // === Toast Helper ===
+  const showToast = (message) => {
+    setToastMsg(message);
+    setTimeout(() => setToastMsg(null), 2000);
+  };
+
+  // === 快速紀錄邏輯 ===
+  const handleAddQuickRecord = async (template) => {
+    if (!db || !template) return;
+    
+    const baseTime = new Date();
+    const respawnTime = new Date(baseTime.getTime() + template.respawnMinutes * 60000);
+    
+    const eventData = {
+      templateId: template.id,
+      name: template.name,
+      color: template.color,
+      mapPos: template.mapPos || null,
+      deathTime: baseTime.toISOString(),
+      respawnTime: respawnTime.toISOString(),
+      createdAt: new Date().toISOString()
+    };
+
+    try {
+      await addDoc(collection(db, "boss_events"), eventData);
+      showToast(`✅ 已紀錄：${template.name}`); // Trigger Toast
+    } catch(e) {
+      console.error("Quick add failed", e);
+      alert("新增失敗");
+    }
+  };
 
   const handleOpenCreateBoss = (bossToEdit = null) => {
     if (bossToEdit) {
@@ -923,10 +1174,6 @@ const BossTimerView = ({ isDarkMode }) => {
     setNewBossForm(prev => ({ ...prev, mapPos: { x, y } }));
   };
 
-  const handleMapClick = (e) => {
-    // 這裡我們不再用來設定位置，僅供顯示（或未來擴充）
-  };
-
   const theme = {
     text: isDarkMode ? 'text-gray-100' : 'text-gray-800',
     subText: isDarkMode ? 'text-gray-400' : 'text-gray-500',
@@ -954,6 +1201,9 @@ const BossTimerView = ({ isDarkMode }) => {
 
   return (
     <div className="p-4 h-[calc(100vh-80px)] flex flex-col">
+      {/* Toast Component */}
+      <ToastNotification message={toastMsg} isVisible={!!toastMsg} />
+
       <div className={`mb-6 p-4 rounded-xl shadow-lg flex flex-col md:flex-row items-center justify-between ${isDarkMode ? 'bg-indigo-900/50 text-white' : 'bg-indigo-600 text-white'}`}>
         <div className="flex items-center gap-4">
           <Clock size={40} className="opacity-80"/>
@@ -986,9 +1236,20 @@ const BossTimerView = ({ isDarkMode }) => {
           }); 
           setIsAddRecordModalOpen(true); 
         }} className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded shadow">
-          <Tag size={18}/> 新增標籤
+          <Tag size={18}/> 新增紀錄
         </button>
+        {/* 快速標籤按鈕 */}
+        <button onClick={() => setIsQuickTagOpen(true)} className="flex items-center gap-2 bg-yellow-500 hover:bg-yellow-400 text-white px-4 py-2 rounded shadow">
+          <Zap size={18}/> 快速標籤
+        </button>
+
         <div className="ml-auto bg-gray-200 rounded-lg p-1 flex">
+           {/* 同步地圖按鈕 */}
+           {viewMode === 'MAP' && (
+             <button onClick={handleSyncMapPositions} className={`px-3 py-1 rounded flex items-center gap-1 text-sm border-r border-gray-300 text-gray-500 hover:text-blue-500 hover:bg-gray-100`}>
+               <RefreshCcw size={14}/> 同步位置
+             </button>
+           )}
            <button onClick={() => setViewMode('LIST')} className={`px-3 py-1 rounded flex items-center gap-1 text-sm ${viewMode==='LIST' ? 'bg-white shadow text-blue-600' : 'text-gray-500'}`}>
              <List size={14}/> 列表
            </button>
@@ -1029,7 +1290,7 @@ const BossTimerView = ({ isDarkMode }) => {
         ) : (
           <div className={`flex-1 relative rounded-xl overflow-hidden shadow-inner flex items-center justify-center ${isDarkMode ? 'bg-gray-900' : 'bg-gray-200'}`}>
             <div className="relative w-auto h-auto max-w-full max-h-full" style={{ aspectRatio: '1152/851' }}>
-               <img src={MAP_IMAGE_PATH} alt="Game Map" className="w-full h-full object-contain block" 
+               <img src={MAP_IMAGE_PATH} alt="Game Map" className="w-full h-full block" 
                     onError={(e) => { 
                       const parent = e.target.parentElement;
                       if (parent) {
@@ -1042,19 +1303,41 @@ const BossTimerView = ({ isDarkMode }) => {
                
                <ConnectionOverlay displayEvents={mapDisplayEvents} now={now} />
 
-               {mapDisplayEvents.filter(e => e.mapPos).map((event, index) => (
-                 <div key={event.id} className="absolute transform -translate-x-1/2 -translate-y-1/2 flex flex-col items-center group cursor-pointer z-10"
-                      style={{ left: `${event.mapPos.x}%`, top: `${event.mapPos.y}%` }}
-                      onClick={() => handleOpenEditEvent(event)} 
-                      title="點擊編輯">
-                    <div className={`w-5 h-5 rounded-full border-2 border-white shadow-md flex items-center justify-center ${((new Date(event.respawnTime) - now) <= 600000) ? 'animate-ping' : ''}`} style={{ backgroundColor: event.color }}>
-                       <span className="text-white text-[10px] font-bold pointer-events-none">{index + 1}</span>
-                    </div>
-                    <div className="absolute top-6 bg-black/70 text-white text-[10px] px-2 py-1 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity z-10 pointer-events-none">
-                       {index + 1}. {event.name} ({formatTimeOnly(event.respawnTime)})
-                    </div>
-                 </div>
-               ))}
+               {mapDisplayEvents.filter(e => e.mapPos).map((event, index) => {
+                 const shouldBlink = (new Date(event.respawnTime) - now) <= 600000;
+                 return (
+                   <div key={event.id} className="absolute transform -translate-x-1/2 -translate-y-1/2 flex flex-col items-center group cursor-pointer z-10"
+                        style={{ left: `${event.mapPos.x}%`, top: `${event.mapPos.y}%` }}
+                        onClick={() => handleOpenEditEvent(event)} 
+                        title="點擊編輯">
+                      
+                      <div className="relative flex items-center justify-center">
+                        {/* 閃爍光環：放在底層，不影響文字顯示 */}
+                        {shouldBlink && (
+                          <div className="absolute w-full h-full rounded-full animate-ping opacity-75" 
+                               style={{ backgroundColor: event.color, transform: 'scale(1.5)' }}>
+                          </div>
+                        )}
+                        
+                        {/* 靜態圓圈與編號 */}
+                        <div className={`w-5 h-5 rounded-full border-2 border-white shadow-md flex items-center justify-center relative z-10`} style={{ backgroundColor: event.color }}>
+                           <span className="text-white text-[10px] font-bold pointer-events-none">{index + 1}</span>
+                        </div>
+                      </div>
+
+                      {/* 永遠顯示的名稱標籤 (新增) */}
+                      <div className={`absolute top-6 left-1/2 -translate-x-1/2 text-[10px] px-1.5 py-0.5 rounded whitespace-nowrap font-bold shadow-md z-20 pointer-events-none
+                        ${isDarkMode ? 'bg-black/80 text-white' : 'bg-white/90 text-gray-800'}`}>
+                        {event.name}
+                      </div>
+
+                      {/* 懸停時才顯示的詳細時間 (修改樣式以避免遮擋) */}
+                      <div className="absolute top-12 bg-black/90 text-white text-[10px] px-2 py-1 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity z-30 pointer-events-none border border-white/20">
+                         {index + 1}. {event.name} ({formatTimeOnly(event.respawnTime)})
+                      </div>
+                   </div>
+                 );
+               })}
             </div>
           </div>
         )}
@@ -1209,12 +1492,23 @@ const BossTimerView = ({ isDarkMode }) => {
           </div>
         </div>
       )}
+
+      {/* 快速標籤面板 (QuickTagPanel) */}
+      <QuickTagPanel 
+        isOpen={isQuickTagOpen} 
+        onClose={() => setIsQuickTagOpen(false)}
+        bossTemplates={bossTemplates}
+        handleAddQuickRecord={handleAddQuickRecord}
+        isDarkMode={isDarkMode}
+        theme={theme}
+      />
     </div>
   );
 };
 
 export default function App() {
-  const [currentTab, setCurrentTab] = useState('ACCOUNTING');
+  // 修改: 預設顯示 Boss Timer
+  const [currentTab, setCurrentTab] = useState('BOSS_TIMER');
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [dbReady, setDbReady] = useState(false);
 
