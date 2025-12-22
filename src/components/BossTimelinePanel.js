@@ -1,6 +1,6 @@
 // src/components/BossTimelinePanel.js
 import React, { useState, useEffect } from 'react';
-import { X, Settings, Plus, Trash2, Clock, Calendar, Loader2 } from 'lucide-react';
+import { X, Settings, Trash2, Clock, Calendar, Loader2 } from 'lucide-react';
 import { collection, addDoc, deleteDoc, doc, onSnapshot, query, orderBy } from "firebase/firestore";
 import { db } from '../config/firebase';
 import { formatTimeOnly } from '../utils/helpers';
@@ -10,23 +10,16 @@ const BossTimelinePanel = ({ isOpen, onClose, isDarkMode, currentUser }) => {
   const [records, setRecords] = useState([]);
   const [now, setNow] = useState(new Date());
 
-  // Loading states
   const [isSubmitting, setIsSubmitting] = useState(false);
-
-  // Modals state
   const [showTypeModal, setShowTypeModal] = useState(false);
   const [showRecordModal, setShowRecordModal] = useState(false);
 
-  // Forms
   const [typeForm, setTypeForm] = useState({ name: '', interval: 60, color: '#FF5733' });
   const [recordForm, setRecordForm] = useState({ typeId: '', deathTime: '', deathDate: '' });
 
-  // 1. 讀取資料
   useEffect(() => {
     if (!isOpen || !db) return;
-    
-    // 更新現在時間
-    const timer = setInterval(() => setNow(new Date()), 60000); // 每分鐘更新
+    const timer = setInterval(() => setNow(new Date()), 60000); 
     setNow(new Date());
 
     const qTypes = query(collection(db, "timeline_types"), orderBy("interval"));
@@ -42,7 +35,6 @@ const BossTimelinePanel = ({ isOpen, onClose, isDarkMode, currentUser }) => {
     };
   }, [isOpen]);
 
-  // 2. 處理 Boss 設定 (Types)
   const handleAddType = async () => {
     if (currentUser === '訪客') return alert("訪客權限僅供瀏覽");
     if (!typeForm.name || typeForm.interval <= 0) return alert("請輸入名稱與有效分鐘數");
@@ -51,7 +43,6 @@ const BossTimelinePanel = ({ isOpen, onClose, isDarkMode, currentUser }) => {
     try {
       await addDoc(collection(db, "timeline_types"), typeForm);
       setTypeForm({ name: '', interval: 60, color: '#FF5733' });
-      // 成功後不關閉，方便連續新增
     } catch (error) {
       console.error("Add Type Error:", error);
       alert("新增失敗：" + error.message);
@@ -61,24 +52,21 @@ const BossTimelinePanel = ({ isOpen, onClose, isDarkMode, currentUser }) => {
   };
 
   const handleDeleteType = async (e, id) => {
-    e.stopPropagation(); // 防止點擊事件冒泡
-    e.preventDefault();  // 防止表單提交
-    
+    e.stopPropagation();
+    e.preventDefault();
     if (currentUser === '訪客') return alert("訪客權限僅供瀏覽");
     if (!id) return alert("錯誤：找不到該設定的 ID");
 
     if (window.confirm("刪除此設定將不會刪除已存在的紀錄，確定嗎？")) {
       try {
-        // === 修正重點：括號位置修正 doc(db, collection, id) ===
         await deleteDoc(doc(db, "timeline_types", id));
       } catch (error) {
         console.error("Delete Type Error:", error);
-        alert("刪除失敗，請檢查權限或網路連線。\n錯誤訊息：" + error.message);
+        alert("刪除失敗：" + error.message);
       }
     }
   };
 
-  // 3. 處理紀錄 (Records)
   const handleAddRecord = async () => {
     if (currentUser === '訪客') return alert("訪客權限僅供瀏覽");
     if (!recordForm.typeId || !recordForm.deathDate || !recordForm.deathTime) return alert("資料不完整");
@@ -94,7 +82,6 @@ const BossTimelinePanel = ({ isOpen, onClose, isDarkMode, currentUser }) => {
         creator: currentUser,
         createdAt: new Date().getTime()
       });
-
       setShowRecordModal(false);
     } catch (error) {
       console.error("Add Record Error:", error);
@@ -108,7 +95,6 @@ const BossTimelinePanel = ({ isOpen, onClose, isDarkMode, currentUser }) => {
     if (currentUser === '訪客') return alert("訪客權限僅供瀏覽");
     if (window.confirm("確定刪除這條時間線紀錄嗎？")) {
       try {
-        // === 修正重點：括號位置修正 ===
         await deleteDoc(doc(db, "timeline_records", id));
       } catch (error) {
         console.error("Delete Record Error:", error);
@@ -117,7 +103,6 @@ const BossTimelinePanel = ({ isOpen, onClose, isDarkMode, currentUser }) => {
     }
   };
 
-  // 4. 計算時間軸標記 (含分層邏輯)
   const calculateMarkers = (targetDate) => {
     const startOfDay = new Date(targetDate);
     startOfDay.setHours(0, 0, 0, 0);
@@ -133,14 +118,12 @@ const BossTimelinePanel = ({ isOpen, onClose, isDarkMode, currentUser }) => {
       const intervalMs = type.interval * 60 * 1000;
       let checkTime = record.deathTimestamp;
 
-      // 優化：直接跳躍到 startOfDay 附近
       if (checkTime < startOfDay.getTime()) {
         const diff = startOfDay.getTime() - checkTime;
         const jumps = Math.floor(diff / intervalMs);
         checkTime += jumps * intervalMs;
       }
 
-      // 開始往後推算
       while (checkTime <= endOfDay.getTime() + intervalMs) { 
         if (checkTime >= startOfDay.getTime() && checkTime <= endOfDay.getTime()) {
            const current = new Date(checkTime);
@@ -161,7 +144,6 @@ const BossTimelinePanel = ({ isOpen, onClose, isDarkMode, currentUser }) => {
       }
     });
 
-    // === 分層堆疊邏輯 (Stacking) ===
     rawMarkers.sort((a, b) => a.percent - b.percent);
 
     const levels = [ -10, -10, -10, -10 ]; 
@@ -198,6 +180,8 @@ const BossTimelinePanel = ({ isOpen, onClose, isDarkMode, currentUser }) => {
   const currentMinutes = now.getHours() * 60 + now.getMinutes();
   const currentPercent = (currentMinutes / 1440) * 100;
 
+  const highlightHours = [2, 5, 8, 11, 14, 17, 20, 23];
+
   const TimelineRow = ({ label, markers, showCurrentLine }) => (
     <div className="mb-10 relative">
       <div className="flex justify-between items-end mb-6">
@@ -205,16 +189,26 @@ const BossTimelinePanel = ({ isOpen, onClose, isDarkMode, currentUser }) => {
       </div>
       
       {/* 刻度尺背景 */}
+      {/* === 修改重點：移除 overflow-hidden，讓上方的數字刻度可以顯示 === */}
       <div className={`h-16 w-full relative rounded border ${isDarkMode ? 'bg-gray-800 border-gray-600' : 'bg-gray-100 border-gray-300'}`}> 
         
-        {/* 小時刻度 */}
+        {/* 高光時段 (z-0: 最底層) */}
+        {highlightHours.map(h => (
+           <div 
+             key={`hl-${h}`} 
+             className="absolute top-0 bottom-0 bg-yellow-500/10 border-x border-yellow-500/20 z-0"
+             style={{ left: `${(h/24)*100}%`, width: `${(1/24)*100}%` }}
+           />
+        ))}
+
+        {/* 小時刻度 (z-10: 確保在背景之上) */}
         {[...Array(25)].map((_, i) => (
-          <div key={i} className="absolute top-0 bottom-0 border-l border-gray-400/30" style={{ left: `${(i/24)*100}%` }}>
-             <span className="absolute -top-6 -translate-x-1/2 text-[10px] opacity-50 font-mono">{i}</span>
+          <div key={i} className="absolute top-0 bottom-0 border-l border-gray-400/30 z-10" style={{ left: `${(i/24)*100}%` }}>
+             <span className="absolute -top-6 -translate-x-1/2 text-[10px] opacity-70 font-mono font-bold">{i}</span>
           </div>
         ))}
 
-        {/* 現在時間線 */}
+        {/* 現在時間線 (z-20) */}
         {showCurrentLine && (
           <div className="absolute top-[-24px] bottom-[-10px] w-0.5 bg-red-500 z-20 shadow-[0_0_8px_rgba(239,68,68,0.8)] pointer-events-none" 
                style={{ left: `${currentPercent}%` }}>
@@ -222,29 +216,22 @@ const BossTimelinePanel = ({ isOpen, onClose, isDarkMode, currentUser }) => {
           </div>
         )}
 
-        {/* Boss 標記 */}
+        {/* Boss 標記 (z-30) */}
         {markers.map((m, idx) => {
           const height = 25; 
           const top = m.level * 25; 
-
           return (
             <div 
               key={idx}
-              className="absolute w-1.5 z-10 hover:z-30 group cursor-pointer transition-all hover:w-3 hover:brightness-125 border-l border-white/20"
-              style={{ 
-                left: `${m.percent}%`, 
-                backgroundColor: m.color,
-                top: `${top}%`,
-                height: `${height}%`
-              }}
+              className="absolute w-1.5 z-30 hover:z-40 group cursor-pointer transition-all hover:w-3 hover:brightness-125 border-l border-white/20"
+              style={{ left: `${m.percent}%`, backgroundColor: m.color, top: `${top}%`, height: `${height}%` }}
               onClick={() => {
-                 if(window.confirm(`要刪除這個 ${m.name} (${m.time}) 的時間線追蹤嗎？\n(注意：這會刪除整條設定紀錄)`)) {
+                 if(window.confirm(`要刪除這個 ${m.name} (${m.time}) 的時間線追蹤嗎？`)) {
                    handleDeleteRecord(m.originalRecordId);
                  }
               }}
             >
-              <div className={`absolute bottom-full mb-1 left-1/2 -translate-x-1/2 px-2 py-1 rounded text-xs whitespace-nowrap shadow-lg hidden group-hover:block z-50 pointer-events-none
-                ${isDarkMode ? 'bg-black text-white border border-gray-600' : 'bg-white text-gray-800 border border-gray-300'}`}>
+              <div className={`absolute bottom-full mb-1 left-1/2 -translate-x-1/2 px-2 py-1 rounded text-xs whitespace-nowrap shadow-lg hidden group-hover:block z-50 pointer-events-none ${isDarkMode ? 'bg-black text-white border border-gray-600' : 'bg-white text-gray-800 border border-gray-300'}`}>
                 <div className="font-bold flex items-center gap-2">
                   <div className="w-2 h-2 rounded-full" style={{background: m.color}}></div>
                   {m.name}
@@ -261,149 +248,74 @@ const BossTimelinePanel = ({ isOpen, onClose, isDarkMode, currentUser }) => {
   return (
     <div className="fixed inset-0 z-[60] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
       <div className={`w-full max-w-6xl h-[90vh] rounded-xl flex flex-col shadow-2xl ${isDarkMode ? 'bg-gray-900 text-white' : 'bg-white text-gray-800'}`}>
-        
-        {/* Header */}
         <div className="p-4 border-b border-gray-500/30 flex justify-between items-center">
           <div className="flex items-center gap-3">
-             <h2 className="text-xl font-bold flex items-center gap-2">
-               <Calendar size={24} className="text-orange-500"/> Boss 時間線 (Timeline)
-             </h2>
+             <h2 className="text-xl font-bold flex items-center gap-2"><Calendar size={24} className="text-orange-500"/> Boss 時間線 (Timeline)</h2>
              <span className="text-xs opacity-50 border px-2 py-0.5 rounded">獨立系統</span>
           </div>
           <div className="flex gap-2">
-             <button onClick={() => setShowTypeModal(true)} className="flex items-center gap-1 px-3 py-1.5 bg-gray-600 text-white rounded hover:bg-gray-700 text-sm">
-               <Settings size={14}/> 設定 Boss
-             </button>
+             <button onClick={() => setShowTypeModal(true)} className="flex items-center gap-1 px-3 py-1.5 bg-gray-600 text-white rounded hover:bg-gray-700 text-sm"><Settings size={14}/> 設定 Boss</button>
              <button onClick={() => {
                 const nowStr = new Date();
-                setRecordForm({ 
-                    typeId: types[0]?.id || '', 
-                    deathDate: nowStr.toISOString().split('T')[0], 
-                    deathTime: `${String(nowStr.getHours()).padStart(2,'0')}:${String(nowStr.getMinutes()).padStart(2,'0')}` 
-                });
+                setRecordForm({ typeId: types[0]?.id || '', deathDate: nowStr.toISOString().split('T')[0], deathTime: `${String(nowStr.getHours()).padStart(2,'0')}:${String(nowStr.getMinutes()).padStart(2,'0')}` });
                 setShowRecordModal(true);
-             }} className="flex items-center gap-1 px-3 py-1.5 bg-orange-600 text-white rounded hover:bg-orange-700 text-sm">
-               <Clock size={14}/> 設定重生時間
-             </button>
+             }} className="flex items-center gap-1 px-3 py-1.5 bg-orange-600 text-white rounded hover:bg-orange-700 text-sm"><Clock size={14}/> 設定重生時間</button>
              <button onClick={onClose} className="p-1.5 hover:bg-gray-500/20 rounded"><X size={24}/></button>
           </div>
         </div>
-
-        {/* Content */}
         <div className="flex-1 overflow-y-auto p-6 md:p-10">
            <TimelineRow label="今天 (Today 24hr)" markers={todayMarkers} showCurrentLine={true} />
-           
            <TimelineRow label="明天 (Tomorrow 24hr)" markers={tomorrowMarkers} showCurrentLine={false} />
-           
            <div className="mt-8 p-4 rounded border border-gray-500/20 bg-gray-500/5 text-sm opacity-70">
               <h5 className="font-bold mb-1">💡 說明：</h5>
               <ul className="list-disc pl-5 space-y-1">
-                 <li>此系統為獨立運作，適合用來規劃固定週期的打王行程。</li>
-                 <li>如果時間太過接近，色條會自動上下錯開 (Stacking)，避免重疊。</li>
-                 <li>點擊時間軸上的色條可以刪除該條追蹤紀錄。</li>
+                 <li>系統會自動顯示每小時的刻度。</li>
+                 <li>黃色高光區域代表重點時段 (2, 5, 8, 11 點)，時間軸標記會自動分層。</li>
               </ul>
            </div>
         </div>
       </div>
-
-      {/* Modal: 設定 Boss 類型 */}
+      {/* Modals 略 (保持不變) */}
       {showTypeModal && (
         <div className="absolute inset-0 z-[70] bg-black/50 flex items-center justify-center p-4">
            <div className={`w-96 p-6 rounded-lg shadow-xl border ${isDarkMode ? 'bg-gray-800 border-gray-600' : 'bg-white border-gray-200'}`}>
-              <h3 className="font-bold mb-4 flex justify-between items-center">
-                 設定 Boss 類型 
-                 <button onClick={()=>setShowTypeModal(false)}><X size={18}/></button>
-              </h3>
+              <h3 className="font-bold mb-4 flex justify-between items-center">設定 Boss 類型 <button onClick={()=>setShowTypeModal(false)}><X size={18}/></button></h3>
               <div className="space-y-3">
-                 <div>
-                    <label className="text-xs opacity-70">名稱 (如: 4H王)</label>
-                    <input type="text" className={`w-full p-2 border rounded ${isDarkMode ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300 text-gray-900'}`} value={typeForm.name} onChange={e=>setTypeForm({...typeForm, name: e.target.value})}/>
-                 </div>
-                 <div>
-                    <label className="text-xs opacity-70">重生間隔 (分鐘)</label>
-                    <input type="number" className={`w-full p-2 border rounded ${isDarkMode ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300 text-gray-900'}`} value={typeForm.interval} onChange={e=>setTypeForm({...typeForm, interval: Number(e.target.value)})}/>
-                 </div>
-                 <div>
-                    <label className="text-xs opacity-70">代表顏色</label>
-                    <input type="color" className="w-full h-10 cursor-pointer rounded" value={typeForm.color} onChange={e=>setTypeForm({...typeForm, color: e.target.value})}/>
-                 </div>
-                 <button 
-                   onClick={handleAddType} 
-                   disabled={isSubmitting}
-                   className="w-full py-2 bg-blue-600 text-white rounded font-bold hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-2"
-                 >
-                   {isSubmitting && <Loader2 size={16} className="animate-spin"/>} 新增類型
-                 </button>
+                 <div><label className="text-xs opacity-70">名稱</label><input type="text" className={`w-full p-2 border rounded ${isDarkMode ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300 text-gray-900'}`} value={typeForm.name} onChange={e=>setTypeForm({...typeForm, name: e.target.value})}/></div>
+                 <div><label className="text-xs opacity-70">間隔 (分)</label><input type="number" className={`w-full p-2 border rounded ${isDarkMode ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300 text-gray-900'}`} value={typeForm.interval} onChange={e=>setTypeForm({...typeForm, interval: Number(e.target.value)})}/></div>
+                 <div><label className="text-xs opacity-70">顏色</label><input type="color" className="w-full h-10 cursor-pointer rounded" value={typeForm.color} onChange={e=>setTypeForm({...typeForm, color: e.target.value})}/></div>
+                 <button onClick={handleAddType} disabled={isSubmitting} className="w-full py-2 bg-blue-600 text-white rounded font-bold hover:bg-blue-700">{isSubmitting ? <Loader2 size={16} className="animate-spin"/> : '新增'}</button>
               </div>
-
               <div className="mt-6 border-t pt-4 border-gray-500/30">
                  <h4 className="text-xs font-bold mb-2 opacity-70">已存類型：</h4>
                  <div className="max-h-48 overflow-y-auto space-y-1 pr-1">
                     {types.map(t => (
-                       <div key={t.id} className="flex justify-between items-center text-sm p-2 hover:bg-black/10 rounded border border-transparent hover:border-gray-500/20 transition-colors">
-                          <div className="flex items-center gap-2">
-                             <div className="w-3 h-3 rounded-full shadow-sm" style={{backgroundColor: t.color}}></div>
-                             <span>{t.name} ({t.interval}m)</span>
-                          </div>
-                          <button 
-                            type="button"
-                            onClick={(e)=>handleDeleteType(e, t.id)} 
-                            className="text-gray-400 hover:text-red-500 p-1"
-                          >
-                            <Trash2 size={14}/>
-                          </button>
-                       </div>
+                       <div key={t.id} className="flex justify-between items-center text-sm p-2 hover:bg-black/10 rounded border border-transparent hover:border-gray-500/20"><div className="flex items-center gap-2"><div className="w-3 h-3 rounded-full" style={{backgroundColor: t.color}}></div><span>{t.name} ({t.interval}m)</span></div><button onClick={(e)=>handleDeleteType(e, t.id)} className="text-gray-400 hover:text-red-500"><Trash2 size={14}/></button></div>
                     ))}
-                    {types.length === 0 && <div className="text-xs opacity-40 text-center py-2">尚未建立任何類型</div>}
                  </div>
               </div>
            </div>
         </div>
       )}
-
-      {/* Modal: 設定重生時間 (紀錄) */}
       {showRecordModal && (
         <div className="absolute inset-0 z-[70] bg-black/50 flex items-center justify-center p-4">
            <div className={`w-96 p-6 rounded-lg shadow-xl border ${isDarkMode ? 'bg-gray-800 border-gray-600' : 'bg-white border-gray-200'}`}>
-              <h3 className="font-bold mb-4">設定重生時間 (追蹤)</h3>
+              <h3 className="font-bold mb-4">設定重生時間</h3>
               <div className="space-y-3">
                  <div>
-                    <label className="text-xs opacity-70">選擇 Boss 類型</label>
-                    <select 
-                        className={`w-full p-2 border rounded ${isDarkMode ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300 text-gray-900'}`} 
-                        value={recordForm.typeId} 
-                        onChange={e=>setRecordForm({...recordForm, typeId: e.target.value})}
-                    >
-                       <option value="" className="text-gray-500">請選擇...</option>
-                       {types.map(t => <option key={t.id} value={t.id} className={isDarkMode ? 'bg-gray-700 text-white' : 'bg-white text-gray-900'}>{t.name} ({t.interval}m)</option>)}
-                    </select>
+                    <label className="text-xs opacity-70">選擇 Boss</label>
+                    <select className={`w-full p-2 border rounded ${isDarkMode ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300 text-gray-900'}`} value={recordForm.typeId} onChange={e=>setRecordForm({...recordForm, typeId: e.target.value})}><option value="">請選擇...</option>{types.map(t => <option key={t.id} value={t.id} className={isDarkMode?'bg-gray-700':'bg-white'}>{t.name} ({t.interval}m)</option>)}</select>
                  </div>
                  <div className="flex gap-2">
-                    <div className="flex-1">
-                       <label className="text-xs opacity-70">死亡日期</label>
-                       <input type="date" className={`w-full p-2 border rounded ${isDarkMode ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300 text-gray-900'}`} value={recordForm.deathDate} onChange={e=>setRecordForm({...recordForm, deathDate: e.target.value})}/>
-                    </div>
-                    <div className="flex-1">
-                       <label className="text-xs opacity-70">死亡時間</label>
-                       <input type="time" className={`w-full p-2 border rounded ${isDarkMode ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300 text-gray-900'}`} value={recordForm.deathTime} onChange={e=>setRecordForm({...recordForm, deathTime: e.target.value})}/>
-                    </div>
+                    <div className="flex-1"><label className="text-xs opacity-70">日期</label><input type="date" className={`w-full p-2 border rounded ${isDarkMode ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300 text-gray-900'}`} value={recordForm.deathDate} onChange={e=>setRecordForm({...recordForm, deathDate: e.target.value})}/></div>
+                    <div className="flex-1"><label className="text-xs opacity-70">時間</label><input type="time" className={`w-full p-2 border rounded ${isDarkMode ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300 text-gray-900'}`} value={recordForm.deathTime} onChange={e=>setRecordForm({...recordForm, deathTime: e.target.value})}/></div>
                  </div>
-                 <div className="text-xs text-orange-500 opacity-80 mt-1">
-                    * 系統將自動推算所有後續重生點。
-                 </div>
-                 <button 
-                   onClick={handleAddRecord} 
-                   disabled={isSubmitting}
-                   className="w-full py-2 bg-orange-600 text-white rounded font-bold hover:bg-orange-700 mt-2 disabled:opacity-50 flex items-center justify-center gap-2"
-                 >
-                    {isSubmitting && <Loader2 size={16} className="animate-spin"/>} 開始追蹤
-                 </button>
+                 <button onClick={handleAddRecord} disabled={isSubmitting} className="w-full py-2 bg-orange-600 text-white rounded font-bold hover:bg-orange-700 mt-2">{isSubmitting ? <Loader2 size={16} className="animate-spin"/> : '開始追蹤'}</button>
               </div>
               <button onClick={()=>setShowRecordModal(false)} className="mt-4 w-full py-2 bg-gray-500 text-white rounded hover:bg-gray-600">取消</button>
            </div>
         </div>
       )}
-
     </div>
   );
 };

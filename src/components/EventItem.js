@@ -1,30 +1,30 @@
 // src/components/EventItem.js
 import React from 'react';
-import { MapPin, Skull, Clock, RefreshCw, RotateCcw } from 'lucide-react'; // 加入 RotateCcw icon
+// 1. 加入 Star 元件
+import { MapPin, Skull, Clock, RefreshCw, RotateCcw, Star } from 'lucide-react'; 
 import { formatTimeWithSeconds } from '../utils/helpers';
 
 const EventItem = ({ 
-  event, theme, now, // 接收現在時間
+  event, theme, now, 
   confirmDeleteId, setConfirmDeleteId, 
   handleDeleteEvent, handleOpenEditEvent, 
-  handleQuickRefresh, handleUndo, hasUndo, // 接收回復相關
+  handleQuickRefresh, handleUndo, hasUndo, 
   currentUser 
 }) => {
   
   // 計算是否逾期超過1分鐘 (60000ms)
   const isOverdue = now && (now - new Date(event.respawnTime) > 60000);
 
-  // 產生星號圖片陣列 (修改間距為 gap-0.5)
+  // 2. 修改星星渲染邏輯：改用 <Star /> 取代 <img>
   const renderStars = (count) => {
     if (!count || count <= 0) return null;
     return (
       <div className="flex gap-0.5 mt-1">
         {[...Array(Math.min(count, 10))].map((_, i) => (
-          <img 
+          <Star 
             key={i} 
-            src={(process.env.PUBLIC_URL || '') + '/star.png'} 
-            alt="star" 
-            className="w-3 h-3 block" 
+            size={12} 
+            className="text-yellow-500 fill-yellow-500" // 設定黃色並填滿
           />
         ))}
       </div>
@@ -38,9 +38,11 @@ const EventItem = ({
       style={{ 
         // 若逾期，左邊框顏色改由 border-red-600 統一控制，否則使用 event.color
         borderLeftColor: isOverdue ? undefined : event.color,
-        background: 'var(--card-bg)',
-        color: 'var(--card-text)'
+        background: 'var(--card-bg)', // 使用全域變數保持主題一致
+        color: 'var(--card-text)',
+        cursor: 'pointer' // 加入手型鼠標提示可點擊
       }}
+      onClick={() => handleOpenEditEvent(event)} // 點擊整張卡片進入編輯
     >
       <div>
         <div className="font-bold text-sm flex items-center gap-2">

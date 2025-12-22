@@ -9,15 +9,14 @@ import {
 
 import { db } from '../config/firebase';
 import { 
-  MAP_IMAGE_PATH, sendLog, formatTimeWithSeconds, formatTimeOnly, getRelativeDay, 
-  getRandomBrightColor, getCurrentDateStr, getCurrentTimeStr 
+  MAP_IMAGE_PATH, formatTimeWithSeconds, formatTimeOnly, getRelativeDay, 
+  getRandomBrightColor, getCurrentDateStr, getCurrentTimeStr, sendLog
 } from '../utils/helpers';
 import ToastNotification from '../components/ToastNotification';
 import EventItem from '../components/EventItem';
 import ConnectionOverlay from '../components/ConnectionOverlay';
 import QuickTagPanel from '../components/QuickTagPanel';
-// 1. 引入新元件
-import BossTimelinePanel from '../components/BossTimelinePanel';
+import BossTimelinePanel from '../components/BossTimelinePanel'; 
 
 const BossTimerView = ({ isDarkMode, currentUser, globalSettings }) => {
   const [bossTemplates, setBossTemplates] = useState([]);
@@ -25,13 +24,11 @@ const BossTimerView = ({ isDarkMode, currentUser, globalSettings }) => {
   const [now, setNow] = useState(new Date()); 
   const [toastMsg, setToastMsg] = useState(null); 
   
-  // 結構: { eventId: [{deathTime, respawnTime}, ...] }
   const [undoHistory, setUndoHistory] = useState({});
 
   const [isCreateBossModalOpen, setIsCreateBossModalOpen] = useState(false);
   const [isAddRecordModalOpen, setIsAddRecordModalOpen] = useState(false);
   const [isQuickTagOpen, setIsQuickTagOpen] = useState(false); 
-  // 2. 新增 Timeline 狀態
   const [isTimelineOpen, setIsTimelineOpen] = useState(false);
 
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
@@ -142,8 +139,22 @@ const BossTimerView = ({ isDarkMode, currentUser, globalSettings }) => {
 
   const handleQuickRefresh = async (event) => {
     if (!db) return;
+    
+    // 1. 嘗試從 Templates 找重生間隔 (分鐘)
+    let intervalMinutes = 0;
     const template = bossTemplates.find(t => t.id === event.templateId);
-    if (!template) return alert("找不到原始 Boss 設定 (可能已被刪除)，無法計算 CD");
+    
+    if (template) {
+      intervalMinutes = template.respawnMinutes;
+    } else {
+      // 2. 如果 Template 被刪了，從現有紀錄反推 (RespawTime - DeathTime)
+      if (event.respawnTime && event.deathTime) {
+        const diffMs = new Date(event.respawnTime) - new Date(event.deathTime);
+        intervalMinutes = Math.round(diffMs / 60000);
+      } else {
+        return alert("找不到 Boss 設定，也無法從紀錄推算週期，無法刷新");
+      }
+    }
 
     const currentState = {
       deathTime: event.deathTime,
@@ -152,17 +163,17 @@ const BossTimerView = ({ isDarkMode, currentUser, globalSettings }) => {
 
     setUndoHistory(prev => {
       const eventHistory = prev[event.id] || [];
-      const newHistory = [currentState, ...eventHistory].slice(0, 3); 
+      const newHistory = [currentState, ...eventHistory].slice(0, 3);
       return { ...prev, [event.id]: newHistory };
     });
 
-    const baseTime = new Date();
-    const respawnTime = new Date(baseTime.getTime() + template.respawnMinutes * 60000);
+    const baseTime = new Date(); // 當前時間
+    const newRespawnTime = new Date(baseTime.getTime() + intervalMinutes * 60000);
 
     try {
       await updateDoc(doc(db, "boss_events", event.id), {
-        deathTime: baseTime.toISOString(),
-        respawnTime: respawnTime.toISOString()
+        deathTime: baseTime.toISOString(), // 死亡時間 = 現在
+        respawnTime: newRespawnTime.toISOString() // 重生時間 = 現在 + 週期
       });
       sendLog(currentUser, "快速刷新", `${event.name}`);
       showToast(`🔄 已刷新：${event.name}`);
@@ -347,17 +358,19 @@ const BossTimerView = ({ isDarkMode, currentUser, globalSettings }) => {
     setNewBossForm(prev => ({ ...prev, mapPos: { x, y } }));
   };
 
+  // === 修改重點 1: 移除 other 分類 ===
   const groupedEvents = {
     yesterday: bossEvents.filter(e => getRelativeDay(e.respawnTime) === 'yesterday'),
     today: bossEvents.filter(e => getRelativeDay(e.respawnTime) === 'today'),
     tomorrow: bossEvents.filter(e => getRelativeDay(e.respawnTime) === 'tomorrow'),
+    // other: bossEvents.filter(e => getRelativeDay(e.respawnTime) === 'other'), // 已移除
   };
 
   const displayEvents = bossEvents.sort((a, b) => new Date(a.respawnTime) - new Date(b.respawnTime));
   
   const mapDisplayEvents = displayEvents.filter(e => {
     const diff = (new Date(e.respawnTime) - now) / 1000 / 60;
-    return diff <= MAP_SHOW_MINS; 
+    return diff <= MAP_SHOW_MINS && diff > -60; 
   });
 
   const nextBoss = bossEvents.filter(e => new Date(e.respawnTime) > now).sort((a, b) => new Date(a.respawnTime) - new Date(b.respawnTime))[0];
@@ -418,7 +431,7 @@ const BossTimerView = ({ isDarkMode, currentUser, globalSettings }) => {
         </button>
 
         <div className="ml-auto bg-gray-200 rounded-lg p-1 flex">
-           {/* 3. 在這裡加入時間線按鈕 */}
+           {/* Timeline Button */}
            <button onClick={() => setIsTimelineOpen(true)} className={`px-3 py-1 rounded flex items-center gap-1 text-sm border-r border-gray-300 text-gray-500 hover:text-orange-500 hover:bg-gray-100`}>
              <Calendar size={14}/> 時間線
            </button>
@@ -437,6 +450,7 @@ const BossTimerView = ({ isDarkMode, currentUser, globalSettings }) => {
 
       <div className="flex flex-col lg:flex-row gap-6 h-full overflow-hidden">
         {viewMode === 'LIST' ? (
+          /* === 修改重點 2: 改為 grid-cols-3，且只遍歷 yesterday, today, tomorrow === */
           <div className="flex-1 grid grid-cols-1 md:grid-cols-3 gap-4 h-full overflow-y-auto pb-20">
             {['yesterday', 'today', 'tomorrow'].map(dayKey => (
               <div 
@@ -498,8 +512,13 @@ const BossTimerView = ({ isDarkMode, currentUser, globalSettings }) => {
                  return (
                    <div key={event.id} className="absolute transform -translate-x-1/2 -translate-y-1/2 flex flex-col items-center group cursor-pointer z-10"
                         style={{ left: `${event.mapPos.x}%`, top: `${event.mapPos.y}%` }}
-                        onClick={() => handleOpenEditEvent(event)} 
-                        title="點擊編輯">
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if(currentUser === '訪客') return alert("訪客權限僅供瀏覽");
+                          handleQuickRefresh(event); 
+                        }} 
+                        title="點擊：快速刷新 (紀錄現在時間)"
+                   >
                       
                       <div className="relative flex items-center justify-center">
                         {shouldBlink && (
@@ -708,7 +727,7 @@ const BossTimerView = ({ isDarkMode, currentUser, globalSettings }) => {
         theme={theme}
       />
       
-      {/* 4. 在這裡掛載新元件 */}
+      {/* Timeline 元件掛載 */}
       <BossTimelinePanel 
         isOpen={isTimelineOpen}
         onClose={() => setIsTimelineOpen(false)}

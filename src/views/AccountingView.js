@@ -12,7 +12,6 @@ import { MEMBERS, EXCHANGE_TYPES } from '../utils/constants';
 import { sendLog, sendNotify } from '../utils/helpers';
 import ItemCard from '../components/ItemCard';
 import BalanceGrid from '../components/BalanceGrid';
-// 1. 引入新元件
 import CostCalculatorModal from '../components/CostCalculatorModal';
 
 const AccountingView = ({ isDarkMode, dbReady, currentUser }) => {
@@ -24,13 +23,13 @@ const AccountingView = ({ isDarkMode, dbReady, currentUser }) => {
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
   
   const [isBalanceGridOpen, setIsBalanceGridOpen] = useState(false);
-  // 2. 新增 CostCalculator 狀態
   const [isCostCalcOpen, setIsCostCalcOpen] = useState(false);
   
   const [historyFilter, setHistoryFilter] = useState({ name: '', date: '', dateType: 'created' });
   
+  // 預設 exchangeType 為 'WORLD' (先前修改)
   const [formData, setFormData] = useState({
-    seller: currentUser || MEMBERS[0], itemName: '', price: '', cost: 0, exchangeType: 'GENERAL', participants: [...MEMBERS] 
+    seller: currentUser || MEMBERS[0], itemName: '', price: '', cost: 0, exchangeType: 'WORLD', participants: [...MEMBERS] 
   });
   
   useEffect(() => {
@@ -55,33 +54,39 @@ const AccountingView = ({ isDarkMode, dbReady, currentUser }) => {
   }, [dbReady]);
 
   const handleAddItem = async () => {
-    if (currentUser === '訪客') return alert("訪客權限僅供瀏覽"); // 🔒 訪客鎖
+    if (currentUser === '訪客') return alert("訪客權限僅供瀏覽");
     if (!db) return;
     if (!formData.itemName || !formData.price) { alert("請填寫物品名稱與價格"); return; }
+    
     const finalParticipants = [...new Set([...formData.participants, formData.seller])];
     
+    // 確保價格是數字
+    const initialPrice = parseFloat(formData.price) || 0;
+
     const newItem = {
       ...formData,
       cost: parseFloat(formData.cost) || 0,
-      listingHistory: [], 
+      // === 修改重點：建立時直接將當前售價加入歷史紀錄，自動產生第一筆刊登費 ===
+      listingHistory: [initialPrice], 
       participants: finalParticipants.map(p => ({ name: p })),
       isSold: false, createdAt: new Date().toISOString(), settledAt: null 
     };
     await addDoc(collection(db, "active_items"), newItem);
     sendLog(currentUser, "新增記帳項目", `${newItem.itemName} ($${newItem.price})`);
     
-    setFormData({ seller: currentUser || MEMBERS[0], itemName: '', price: '', cost: 0, exchangeType: 'GENERAL', participants: [...MEMBERS] });
+    // 重置表單 (保持 exchangeType 為 'WORLD')
+    setFormData({ seller: currentUser || MEMBERS[0], itemName: '', price: '', cost: 0, exchangeType: 'WORLD', participants: [...MEMBERS] });
     setIsModalOpen(false); setShowHistory(false);
   };
 
   const updateItemValue = async (id, field, value) => {
-    if (currentUser === '訪客') return; // 🔒 訪客鎖 (輸入框直接不給改)
+    if (currentUser === '訪客') return;
     if (!db) return;
     await updateDoc(doc(db, "active_items", id), { [field]: value });
   };
 
   const handleSettleAll = async (item, perPersonSplit) => {
-    if (currentUser === '訪客') return alert("訪客權限僅供瀏覽"); // 🔒 訪客鎖
+    if (currentUser === '訪客') return alert("訪客權限僅供瀏覽");
     if (!db) return;
 
     try {
@@ -125,7 +130,7 @@ const AccountingView = ({ isDarkMode, dbReady, currentUser }) => {
   };
 
   const handleDelete = async (id) => {
-    if (currentUser === '訪客') return alert("訪客權限僅供瀏覽"); // 🔒 訪客鎖
+    if (currentUser === '訪客') return alert("訪客權限僅供瀏覽");
     if (!db) return;
     try {
       const collectionName = showHistory ? "history_items" : "active_items";
@@ -187,7 +192,6 @@ const AccountingView = ({ isDarkMode, dbReady, currentUser }) => {
           {showHistory ? `歷史紀錄 (${filteredHistory.length})` : `進行中項目 (${items.length})`}
         </h2>
         <div className="flex gap-2">
-          {/* 3. 新增成本試算按鈕 */}
           <button 
             onClick={() => setIsCostCalcOpen(true)}
             className="flex items-center gap-2 px-3 py-2 rounded text-white shadow hover:opacity-80 transition-opacity bg-orange-500"
@@ -198,7 +202,6 @@ const AccountingView = ({ isDarkMode, dbReady, currentUser }) => {
           <button 
             onClick={() => setIsBalanceGridOpen(true)}
             className="flex items-center gap-2 px-3 py-2 rounded text-white shadow hover:opacity-80 transition-opacity"
-            // 按鈕顏色
             style={{ background: 'var(--app-primary)' }}
           >
             <Grid size={18}/> 餘額表格
@@ -286,7 +289,6 @@ const AccountingView = ({ isDarkMode, dbReady, currentUser }) => {
         currentUser={currentUser}
       />
       
-      {/* 4. 掛載成本試算 Modal */}
       <CostCalculatorModal 
         isOpen={isCostCalcOpen}
         onClose={() => setIsCostCalcOpen(false)}

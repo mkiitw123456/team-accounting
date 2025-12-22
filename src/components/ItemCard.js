@@ -1,6 +1,7 @@
 // src/components/ItemCard.js
-import React from 'react';
-import { Trash2, CheckCircle, Plus, X } from 'lucide-react';
+import React, { useState } from 'react';
+// 移除 Plus icon，因為不再需要手動按 + 號
+import { Trash2, CheckCircle, X } from 'lucide-react';
 import { EXCHANGE_TYPES, BASE_LISTING_FEE_PERCENT } from '../utils/constants';
 import { formatDate, calculateFinance, sendLog } from '../utils/helpers';
 
@@ -12,25 +13,31 @@ const ItemCard = ({
 }) => {
   const listingHistory = item.listingHistory || [];
   
+  // 用來記錄 Focus 時的價格，以便在 Blur 時比對是否有變更
+  const [priceOnFocus, setPriceOnFocus] = useState(item.price);
+
   const { perPersonSplit, totalListingFee } = calculateFinance(
     item.price, item.exchangeType, item.participants?.length || 0, item.cost, listingHistory
   );
 
-  // === 修改重點：新增刊登費時，同步更新「物品價格」 ===
-  const addListingPrice = () => {
-      // 提示文字改為輸入「新售價」
-      const newPriceStr = prompt("請輸入「重新刊登」的新價格 (系統將自動更新售價並計算2%刊登費):", item.price);
-      if (newPriceStr) {
-          const priceVal = parseFloat(newPriceStr);
-          if (!isNaN(priceVal)) {
-              // 1. 加入歷史紀錄
-              const newHistory = [...listingHistory, priceVal];
-              updateItemValue(item.id, 'listingHistory', newHistory);
-              
-              // 2. 直接更新主售價 (這會觸發重新計算稅金與淨利)
-              updateItemValue(item.id, 'price', priceVal);
-          }
-      }
+  // === 修改重點 1: 當價格輸入框獲得焦點時，記錄當前數值 ===
+  const handlePriceFocus = () => {
+    setPriceOnFocus(item.price);
+  };
+
+  // === 修改重點 2: 當價格輸入框失去焦點時，若價格有變動，自動新增刊登費紀錄 ===
+  const handlePriceBlur = (e) => {
+    // 取得當前輸入框的最終數值
+    const currentPrice = parseFloat(e.target.value);
+    const previousPrice = parseFloat(priceOnFocus);
+
+    // 只有在「數值有效」且「數值確實有改變」時才新增歷史紀錄
+    if (!isNaN(currentPrice) && currentPrice !== previousPrice) {
+      const newHistory = [...listingHistory, currentPrice];
+      updateItemValue(item.id, 'listingHistory', newHistory);
+      // 不需要額外呼叫 updateItemValue 更新 price，因為 onChange 已經處理了
+      console.log(`價格變更: ${previousPrice} -> ${currentPrice}，已自動新增刊登費。`);
+    }
   };
 
   const removeListingPrice = (index) => {
@@ -84,14 +91,20 @@ const ItemCard = ({
         <div className="flex flex-col">
           <span className={`text-xs opacity-70`}>售價 (含稅)</span>
           <div className="text-lg font-bold">
-            {/* === 修改重點：加上 readOnly 與外觀變化，禁止直接修改 === */}
+            {/* === 修改重點 3: 解鎖輸入框，加入 onFocus 與 onBlur === */}
             {!isHistory ? (
                <input 
                  type="number" 
-                 className="bg-transparent w-full border-b border-gray-400/30 outline-none cursor-not-allowed opacity-80" 
+                 // 移除 cursor-not-allowed 與 opacity-80，加入 focus 樣式
+                 className="bg-transparent w-full border-b border-gray-400/30 outline-none focus:border-blue-500 transition-colors" 
                  value={item.price} 
-                 readOnly 
-                 title="請透過右側「刊登費」的 + 號來更新售價"
+                 // 保持 onChange 以便即時輸入 (這會觸發 Firestore 更新，但不影響 local 變數)
+                 onChange={e => updateItemValue(item.id, 'price', e.target.value)}
+                 // 加入 Focus 紀錄舊數值
+                 onFocus={handlePriceFocus}
+                 // 加入 Blur 比對並新增歷史紀錄
+                 onBlur={handlePriceBlur}
+                 title="直接修改價格，系統會自動新增一筆刊登費紀錄"
                />
             ) : item.price}
           </div>
@@ -103,16 +116,13 @@ const ItemCard = ({
         <div className="flex flex-col">
           <span className={`text-xs opacity-70 flex items-center gap-1`}>
              刊登費 (2%) 
-             {!isHistory && (
-                 <button onClick={addListingPrice} className="bg-blue-500 text-white rounded-full p-0.5 hover:bg-blue-600 shadow" title="重新刊登 (更新售價)">
-                   <Plus size={10}/>
-                 </button>
-             )}
+             {/* === 修改重點 4: 移除了原本這裡的 + 號按鈕 === */}
           </span>
           <div className="flex flex-col gap-1 mt-1 max-h-20 overflow-y-auto">
              {listingHistory.map((price, idx) => (
                  <div key={idx} className="flex items-center justify-between text-xs bg-black/10 p-1 rounded">
                     <span>${price} <span className="opacity-60">&rarr; {Math.floor(price * BASE_LISTING_FEE_PERCENT)}</span></span>
+                    {/* 保留 X 按鈕以供誤觸時刪除 */}
                     {!isHistory && <button onClick={() => removeListingPrice(idx)} className="text-red-400 hover:text-red-600"><X size={10}/></button>}
                  </div>
              ))}

@@ -1,7 +1,8 @@
+// src/App.js
 import React, { useState, useEffect } from 'react';
 // 只保留導航欄(Nav)和全域功能會用到的圖示
 import { 
-  Calculator, ShieldAlert, Bot, Settings, User, LogOut, Sun, Moon, Palette, Users 
+  Calculator, ShieldAlert, Bot, Settings, User, LogOut, Palette, Users 
 } from 'lucide-react';
 
 // 只保留 App.js 監聽全域設定需要的 Firebase 功能
@@ -16,7 +17,6 @@ import MusicPlayer from './components/MusicPlayer';
 import SystemSettingsModal from './components/SystemSettingsModal';
 import UserIdentityModal from './components/UserIdentityModal';
 import UpdateNotification from './components/UpdateNotification';
-import ToastNotification from './components/ToastNotification'; // 如果 App.js 有用到 Toast 則保留
 import ThemeEditor from './components/ThemeEditor';
 // 引入 Views
 import AccountingView from './views/AccountingView';
@@ -24,9 +24,11 @@ import BossTimerView from './views/BossTimerView';
 import AIAssistantView from './components/AIAssistantView'; 
 
 export default function App() {
-  // 修改: 預設顯示 Boss Timer
   const [currentTab, setCurrentTab] = useState('BOSS_TIMER');
-  const [isDarkMode, setIsDarkMode] = useState(false);
+  
+  // === 修改 1: 預設強制為 true (黑夜模式) ===
+  const [isDarkMode, setIsDarkMode] = useState(true);
+  
   const [dbReady, setDbReady] = useState(false);
   const [currentUser, setCurrentUser] = useState(null);
   const [isUserModalOpen, setIsUserModalOpen] = useState(false);
@@ -42,22 +44,19 @@ export default function App() {
   });
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
-  // === 主題自定義狀態 (新增) ===
   // === 主題自定義狀態 ===
   const [isThemeEditorOpen, setIsThemeEditorOpen] = useState(false);
-  const [customTheme, setCustomTheme] = useState(null); // 初始為 null，等待讀取
+  const [customTheme, setCustomTheme] = useState(null); 
 
   // 1. 監聽使用者切換，從 Firebase 讀取個人化主題
   useEffect(() => {
     if (!currentUser || !db) return;
 
-    // 先讀取 LocalStorage 當作備份/快取
     const localSaved = localStorage.getItem(`theme_${currentUser}`);
     if (localSaved) {
       try { setCustomTheme(JSON.parse(localSaved)); } catch(e){}
     }
 
-    // 從 Firebase 讀取
     const docRef = doc(db, "user_settings", currentUser);
     const unsub = onSnapshot(docRef, (docSnap) => {
       if (docSnap.exists() && docSnap.data().theme) {
@@ -68,22 +67,19 @@ export default function App() {
     return () => unsub();
   }, [currentUser, db]);
 
-  // 2. 儲存主題 (同時存 Firebase 和 LocalStorage)
+  // 2. 儲存主題
   const handleSaveTheme = async (newTheme) => {
     setCustomTheme(newTheme);
     setIsThemeEditorOpen(false);
     
-    // 存 LocalStorage
     localStorage.setItem(`theme_${currentUser}`, JSON.stringify(newTheme));
 
-    // 存 Firebase
     if (currentUser && db) {
       try {
         await setDoc(doc(db, "user_settings", currentUser), { 
           theme: newTheme,
           updatedAt: new Date().toISOString()
         }, { merge: true });
-        // 不特別跳 alert 避免打斷體驗，但這代表雲端已儲存
       } catch (e) {
         console.error("主題雲端備份失敗", e);
         alert("主題僅儲存於本機 (雲端同步失敗)");
@@ -91,7 +87,7 @@ export default function App() {
     }
   };
 
-  // 3. 產生 CSS Variables (加入卡片變數)
+  // 3. 產生 CSS Variables
   const getThemeStyles = () => {
     if (!customTheme) return {};
     
@@ -108,7 +104,6 @@ export default function App() {
       '--app-text': customTheme.textColor,
       '--app-card-bg': customTheme.cardBgColor,
       '--app-primary': primaryStyle,
-      // 新增卡片變數 (若無設定則給預設值)
       '--card-bg': customTheme.cardItemBg || '#374151', 
       '--card-text': customTheme.cardItemText || '#ffffff'
     };
@@ -121,10 +116,6 @@ export default function App() {
   useEffect(() => {
     if (db) setDbReady(true);
     
-    // Theme
-    const savedTheme = localStorage.getItem('accounting_theme');
-    if (savedTheme) setIsDarkMode(savedTheme === 'dark');
-
     // User Identity
     const savedUser = localStorage.getItem('accounting_user');
     if (savedUser) {
@@ -133,16 +124,13 @@ export default function App() {
       setIsUserModalOpen(true);
     }
 
-    // === 監聽全域設定 (System Settings Listener) ===
     if (db) {
       const unsub = onSnapshot(doc(db, "system_data", "global_settings"), (doc) => {
         if (doc.exists()) {
           const data = doc.data();
           setGlobalSettings(data);
           
-          // 檢查版本號
           if (data.appVersion && data.appVersion !== APP_VERSION) {
-            console.log("偵測到新版本:", data.appVersion);
             setRemoteVersion(data.appVersion);
             setShowUpdateNotification(true);
           } else {
@@ -153,10 +141,6 @@ export default function App() {
       return () => unsub();
     }
   }, [db]);
-
-  useEffect(() => {
-    localStorage.setItem('accounting_theme', isDarkMode ? 'dark' : 'light');
-  }, [isDarkMode]);
 
   const handleUserSelect = (user) => {
     setCurrentUser(user);
@@ -186,14 +170,12 @@ export default function App() {
   return (
     <div 
       className={`min-h-screen font-sans transition-colors duration-300`}
-      // 注入 CSS 變數 (修改)
       style={{
         background: customTheme ? 'var(--app-bg)' : undefined,
         color: customTheme ? 'var(--app-text)' : undefined,
         ...getThemeStyles() 
       }}
     >
-      {/* 這一層是用來處理：如果沒有自定義主題，就用原本的深色/淺色模式 */}
       <div className={`min-h-screen ${!customTheme ? (isDarkMode ? 'bg-gray-900 text-gray-100' : 'bg-slate-100 text-gray-800') : ''}`}> 
 
         {!dbReady && (
@@ -202,12 +184,10 @@ export default function App() {
           </div>
         )}
 
-        {/* Version Label */}
         <div className="absolute top-0 left-0 p-1 text-[10px] text-gray-500 opacity-50 pointer-events-none z-50">
           {APP_VERSION}
         </div>
 
-        {/* 更新通知 */}
         <UpdateNotification 
           show={showUpdateNotification} 
           remoteVersion={remoteVersion} 
@@ -234,7 +214,6 @@ export default function App() {
                 currentTab === 'CHARACTER_LIST' ? '角色 ID 名錄' :
                 'AI 財務助手'}
              </h1>
-             {/* 手機版切換按鈕，也讓它跟隨文字顏色 */}
              <div className="flex md:hidden rounded-lg p-1" style={{ background: 'rgba(0,0,0,0.2)' }}>
                 <button onClick={()=>setCurrentTab('ACCOUNTING')} className={`px-2 py-1 rounded text-xs ${currentTab==='ACCOUNTING'?'bg-blue-600 text-white':''}`}>記帳</button>
                 <button onClick={()=>setCurrentTab('BOSS_TIMER')} className={`px-2 py-1 rounded text-xs ${currentTab==='BOSS_TIMER'?'bg-purple-600 text-white':''}`}>Boss</button>
@@ -274,7 +253,6 @@ export default function App() {
             )}
             
             <div className="hidden md:flex gap-2 mr-4 p-1 rounded-lg" style={{ background: 'rgba(0,0,0,0.1)' }}>
-               {/* 這裡的按鈕保持原樣，因為它們有用 bg-blue-600 等強調色 */}
                <button 
                  onClick={() => setCurrentTab('ACCOUNTING')}
                  className={`flex items-center gap-2 px-4 py-1.5 rounded-md transition-all ${currentTab === 'ACCOUNTING' ? 'bg-blue-600 text-white shadow' : 'hover:bg-white/10 opacity-70'}`}
@@ -301,9 +279,7 @@ export default function App() {
                </button>
             </div>
 
-            <button onClick={() => setIsDarkMode(!isDarkMode)} className="p-2 rounded-full hover:bg-black/10 transition-colors">
-              {isDarkMode ? <Sun size={20} className="text-yellow-300" /> : <Moon size={20} />}
-            </button>
+            {/* === 修改 2: 移除太陽月亮切換按鈕 === */}
           </div>
         </div>
       </nav>
@@ -324,41 +300,38 @@ export default function App() {
             currentUser={currentUser}
           />
 
-          {/* === 主題編輯器 (新增) === */}
           <ThemeEditor 
             isOpen={isThemeEditorOpen}
             onClose={() => setIsThemeEditorOpen(false)}
             currentTheme={customTheme}
             onSave={handleSaveTheme}
           />
-          {/* ======================= */}
           
-          {/* 音樂播放器放在這裡，使其在全站都能持續播放 */}
           <MusicPlayer 
              videoId={globalSettings.youtubeVideoId}
              isDarkMode={isDarkMode}
           />
 
-<div className="h-full overflow-y-auto">
-          {currentTab === 'ACCOUNTING' ? (
-            <AccountingView isDarkMode={isDarkMode} dbReady={dbReady} currentUser={currentUser} />
-          ) : currentTab === 'BOSS_TIMER' ? (
-            <BossTimerView isDarkMode={isDarkMode} currentUser={currentUser} globalSettings={globalSettings} />
-          ) : currentTab === 'CHARACTER_LIST' ? ( // <--- 新增這個判斷
-            <CharacterListView isDarkMode={isDarkMode} currentUser={currentUser} />
-          ) : (
-            <div className="p-4 h-full max-w-4xl mx-auto">
-                <AIAssistantView 
-                  isDarkMode={isDarkMode} 
-                  currentUser={currentUser} 
-                  globalSettings={globalSettings}
-                  theme={theme}
-                />
-            </div>
-          )}
-        </div>
+          <div className="h-full overflow-y-auto">
+            {currentTab === 'ACCOUNTING' ? (
+              <AccountingView isDarkMode={isDarkMode} dbReady={dbReady} currentUser={currentUser} />
+            ) : currentTab === 'BOSS_TIMER' ? (
+              <BossTimerView isDarkMode={isDarkMode} currentUser={currentUser} globalSettings={globalSettings} />
+            ) : currentTab === 'CHARACTER_LIST' ? (
+              <CharacterListView isDarkMode={isDarkMode} currentUser={currentUser} />
+            ) : (
+              <div className="p-4 h-full max-w-4xl mx-auto">
+                  <AIAssistantView 
+                    isDarkMode={isDarkMode} 
+                    currentUser={currentUser} 
+                    globalSettings={globalSettings}
+                    theme={theme}
+                  />
+              </div>
+            )}
+          </div>
         </main>
-      </div> {/* Closing inner div */}
+      </div>
     </div>
   );
 }

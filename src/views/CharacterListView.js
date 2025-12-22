@@ -1,49 +1,132 @@
 // src/views/CharacterListView.js
 import React, { useState, useEffect } from 'react';
 import { 
-  Copy, Check, User, Plus, Trash2, Edit3, Save, Database 
+  Copy, Check, User, Plus, Trash2, Edit3, Save, Database, PlayCircle, Zap, Ticket 
 } from 'lucide-react';
 import { 
-  doc, onSnapshot, setDoc, updateDoc, arrayUnion, arrayRemove 
+  doc, onSnapshot, setDoc, runTransaction 
 } from "firebase/firestore";
 import { db } from '../config/firebase';
-import { MEMBERS } from '../utils/constants'; // 確保這檔案存在
+import { MEMBERS } from '../utils/constants'; 
 import { sendLog } from '../utils/helpers';
 
 const CharacterListView = ({ isDarkMode, currentUser }) => {
   const [characterData, setCharacterData] = useState({});
-  const [selectedMembers, setSelectedMembers] = useState(MEMBERS); // 預設全選
+  const [selectedMembers, setSelectedMembers] = useState(MEMBERS); 
   const [isEditMode, setIsEditMode] = useState(false);
   const [copiedId, setCopiedId] = useState(null);
-  const [newCharInputs, setNewCharInputs] = useState({}); // 儲存各成員的新增輸入框內容
+  const [newCharInputs, setNewCharInputs] = useState({});
 
-  // 圖片中的初始資料 (用於一鍵匯入)
-  const INITIAL_DATA_FROM_IMAGE = {
-    "Avalon": ["成都[艾萊]", "成都壞女人[艾萊]", "成都大師姊[艾萊]", "天族肉便器[艾萊]", "成都小壞蛋[艾萊]", "重慶[艾萊]", "天族小迷妹[艾萊]", "成都小迷妹[艾萊]"],
-    "Ricky": ["Hoshiyomi[艾萊]", "箭箭箭[艾萊]", "出貨小高手[艾萊]", "魔族小仙女[艾萊]", "傳統美德[艾萊]", "失業補助[艾萊]", "情緒價值[艾萊]", "雜燴兔[艾萊]"],
-    "水野": ["朝花[艾萊]", "朝草[艾萊]", "暮花[艾萊]", "暮草[艾萊]", "夕花[艾萊]", "夕草[艾萊]", "晨花[艾萊]", "晨草[艾萊]"],
-    "vina": ["靡[艾萊]", "綴[艾萊]", "鷥[艾萊]", "我不要跑主線[艾萊]", "䪰[艾萊]", "阿哈最後一只啦[艾萊]", "辣雞麵要配唐心蛋[艾萊]", "x936[艾萊]"],
-    "Wolf": ["MrAirWolf[艾萊]", "FarmerWolf1[艾萊]", "FarmerWolf2[艾萊]", "FarmerWolf3[艾萊]"],
-    "UBS": ["怂那把卡拿[伊斯]", "怂那马萨卡[伊斯]", "压力马斯内[伊斯]", "亚路加内噶[伊斯]", "所累哇多卡纳[伊斯]", "蛇喰夢子[艾萊]", "私密马赛[伊斯]", "牙白一[伊斯]"],
-    "水月": ["沙奈躲避球[艾萊]", "有紀[艾萊]", "你忙吧[艾萊]", "椰蛋樹蘭叫[艾萊]", "小拉達手槍[艾萊]"],
-    "五十嵐": ["金呷[艾萊]", "靜靜品鑑[艾萊]", "細細品劍[艾萊]", "穗弓垣[艾萊]"],
-    "彌砂": [], // 圖片中沒看到，留空
-    "訪客": []
-  };
-
+  // 1. 讀取資料
   useEffect(() => {
     if (!db) return;
-    // 監聽 member_characters 集合中的 data 文件
     const unsub = onSnapshot(doc(db, "member_characters", "data"), (docSnap) => {
       if (docSnap.exists()) {
         setCharacterData(docSnap.data());
       } else {
-        // 如果文件不存在，設為空物件
         setCharacterData({});
       }
     });
     return () => unsub();
   }, []);
+
+  // 2. 自動回復機制 (Auto Regen Logic)
+  useEffect(() => {
+    if (!db) return;
+
+    const checkAndApplyRegen = async () => {
+      try {
+        await runTransaction(db, async (transaction) => {
+          const statusRef = doc(db, "system_data", "regen_status");
+          const dataRef = doc(db, "member_characters", "data");
+          
+          const statusSnap = await transaction.get(statusRef);
+          const dataSnap = await transaction.get(dataRef);
+
+          if (!dataSnap.exists()) return;
+
+          let lastTime = 0;
+          if (statusSnap.exists()) {
+            lastTime = statusSnap.data().lastCheckTime || 0;
+          }
+
+          const now = new Date().getTime();
+          // 如果距離上次檢查不到 1 分鐘，就跳過
+          if (now - lastTime < 60000) return;
+
+          // 體力：2, 5, 8, 11 (AM/PM) -> 2, 5, 8, 11, 14, 17, 20, 23
+          const STAMINA_HOURS = [2, 5, 8, 11, 14, 17, 20, 23]; // +15
+          // 票卷：05:00, 13:00, 21:00
+          const TICKET_HOURS = [5, 13, 21]; // +1
+
+          let currentData = dataSnap.data();
+          let hasChange = false;
+          let checkPointer = lastTime > 0 ? lastTime : now - 1;
+
+          // 限制只補回過去 24 小時的 (避免太久沒開一次補太多)
+          const ONE_DAY = 24 * 60 * 60 * 1000;
+          if (now - checkPointer > ONE_DAY) {
+             checkPointer = now - ONE_DAY;
+          }
+
+          let staminaGain = 0;
+          let ticketGain = 0;
+
+          let pointerDate = new Date(checkPointer);
+          pointerDate.setMinutes(0, 0, 0); // 歸零分秒，從整點開始算
+          
+          // 模擬時間推進，檢查經過了幾個關鍵整點
+          while (pointerDate.getTime() < now) {
+             // 將指針往後推一小時
+             pointerDate.setTime(pointerDate.getTime() + 3600000); 
+             
+             const hourTimestamp = pointerDate.getTime();
+             const h = pointerDate.getHours();
+
+             // 如果這個整點是在「上次檢查」之後，且在「現在」之前，就觸發獎勵
+             if (hourTimestamp > lastTime && hourTimestamp <= now) {
+                if (STAMINA_HOURS.includes(h)) staminaGain += 15;
+                if (TICKET_HOURS.includes(h)) ticketGain += 1;
+             }
+          }
+
+          if (staminaGain === 0 && ticketGain === 0) {
+             transaction.set(statusRef, { lastCheckTime: now }, { merge: true });
+             return;
+          }
+
+          // 開始更新所有角色
+          Object.keys(currentData).forEach(member => {
+             const chars = currentData[member];
+             if (Array.isArray(chars)) {
+               const newChars = chars.map(c => {
+                 if (typeof c === 'string') return c; // 舊格式跳過
+                 return {
+                   ...c,
+                   stamina: Math.min(9999, (parseInt(c.stamina) || 0) + staminaGain), 
+                   tickets: Math.min(99, (parseInt(c.tickets) || 0) + ticketGain)
+                 };
+               });
+               currentData[member] = newChars;
+               hasChange = true;
+             }
+          });
+
+          if (hasChange) {
+             transaction.set(dataRef, currentData);
+             transaction.set(statusRef, { lastCheckTime: now }, { merge: true });
+             console.log(`[Regen] 全體回復: 體力+${staminaGain}, 票卷+${ticketGain}`);
+          }
+        });
+      } catch (e) {
+        console.error("Auto Regen Failed", e);
+      }
+    };
+
+    checkAndApplyRegen();
+    const interval = setInterval(checkAndApplyRegen, 60000);
+    return () => clearInterval(interval);
+  }, []); 
 
   const handleToggleMember = (member) => {
     if (selectedMembers.includes(member)) {
@@ -59,19 +142,96 @@ const CharacterListView = ({ isDarkMode, currentUser }) => {
     setTimeout(() => setCopiedId(null), 1500);
   };
 
+  // 統一更新角色的某個欄位
+  const updateCharacterField = async (member, index, field, value) => {
+    if (currentUser === '訪客') return;
+    
+    const currentList = [...(characterData[member] || [])];
+    const targetChar = currentList[index];
+
+    let newCharObj = typeof targetChar === 'string' 
+      ? { name: targetChar, gear: '', tickets: 0, stamina: 0, custom: 0, note: '' }
+      : { ...targetChar };
+
+    newCharObj[field] = value;
+    currentList[index] = newCharObj;
+
+    try {
+      await setDoc(doc(db, "member_characters", "data"), {
+        [member]: currentList
+      }, { merge: true });
+    } catch (e) {
+      console.error("Update failed", e);
+    }
+  };
+
+  // 完場扣除邏輯
+  const handleCompleteRun = async (member, index) => {
+    if (currentUser === '訪客') return alert("訪客權限僅供瀏覽");
+
+    const currentList = [...(characterData[member] || [])];
+    const targetChar = currentList[index];
+    
+    // 確保是物件格式
+    if (typeof targetChar === 'string') return;
+
+    const runs = parseInt(targetChar.custom) || 0;
+    if (runs <= 0) return alert("請輸入有效的場次數量 (大於 0)");
+
+    const ticketCost = runs * 1;
+    const staminaCost = runs * 80;
+
+    const currentTickets = parseInt(targetChar.tickets) || 0;
+    const currentStamina = parseInt(targetChar.stamina) || 0;
+
+    // 雖然可以變成負數，但還是給個提示比較好 (這裡直接扣除，允許負數)
+    const newTickets = currentTickets - ticketCost;
+    const newStamina = currentStamina - staminaCost;
+
+    const newCharObj = {
+      ...targetChar,
+      tickets: newTickets,
+      stamina: newStamina,
+      custom: '' // 扣除完後清空輸入框，避免誤觸
+    };
+
+    currentList[index] = newCharObj;
+
+    try {
+      await setDoc(doc(db, "member_characters", "data"), {
+        [member]: currentList
+      }, { merge: true });
+      sendLog(currentUser, "完成場次", `${targetChar.name} 完成 ${runs} 場 (票-${ticketCost}, 體-${staminaCost})`);
+      alert(`已扣除 ${runs} 場消耗！\n剩餘票卷: ${newTickets}\n剩餘體力: ${newStamina}`);
+    } catch (e) {
+      console.error("Complete run failed", e);
+      alert("更新失敗");
+    }
+  };
+
   const handleAddCharacter = async (member) => {
     if (currentUser === '訪客') return alert("訪客權限僅供瀏覽");
     const nameToAdd = newCharInputs[member]?.trim();
     if (!nameToAdd) return;
 
     try {
-      const docRef = doc(db, "member_characters", "data");
-      // 使用 arrayUnion 加入陣列，若文件不存在則建立
-      await setDoc(docRef, {
-        [member]: arrayUnion(nameToAdd)
+      const currentList = [...(characterData[member] || [])];
+      const newCharObj = {
+        name: nameToAdd,
+        gear: '',
+        tickets: 0,
+        stamina: 0,
+        custom: '',
+        note: ''
+      };
+      
+      const newList = [...currentList, newCharObj];
+
+      await setDoc(doc(db, "member_characters", "data"), {
+        [member]: newList
       }, { merge: true });
       
-      setNewCharInputs(prev => ({ ...prev, [member]: '' })); // 清空輸入框
+      setNewCharInputs(prev => ({ ...prev, [member]: '' })); 
       sendLog(currentUser, "新增角色", `${member}: ${nameToAdd}`);
     } catch (e) {
       console.error("新增失敗", e);
@@ -79,15 +239,20 @@ const CharacterListView = ({ isDarkMode, currentUser }) => {
     }
   };
 
-  const handleDeleteCharacter = async (member, charName) => {
+  const handleDeleteCharacter = async (member, index) => {
     if (currentUser === '訪客') return alert("訪客權限僅供瀏覽");
+    
+    const currentList = characterData[member] || [];
+    const target = currentList[index];
+    const charName = typeof target === 'string' ? target : target.name;
+
     if (!window.confirm(`確定要刪除 ${member} 的角色 "${charName}" 嗎？`)) return;
 
     try {
-      const docRef = doc(db, "member_characters", "data");
-      await updateDoc(docRef, {
-        [member]: arrayRemove(charName)
-      });
+      const newList = currentList.filter((_, i) => i !== index);
+      await setDoc(doc(db, "member_characters", "data"), {
+        [member]: newList
+      }, { merge: true });
       sendLog(currentUser, "刪除角色", `${member}: ${charName}`);
     } catch (e) {
       console.error("刪除失敗", e);
@@ -95,69 +260,35 @@ const CharacterListView = ({ isDarkMode, currentUser }) => {
     }
   };
 
-  // 一鍵匯入初始資料
-  const handleImportInitialData = async () => {
-    if (currentUser === '訪客') return alert("訪客權限僅供瀏覽");
-    if (!window.confirm("這將會覆寫/合併目前的資料庫內容為圖片中的預設值，確定要執行嗎？")) return;
-    
-    try {
-      await setDoc(doc(db, "member_characters", "data"), INITIAL_DATA_FROM_IMAGE, { merge: true });
-      alert("匯入成功！");
-      sendLog(currentUser, "系統操作", "匯入初始角色資料");
-    } catch (e) {
-      console.error(e);
-      alert("匯入失敗");
-    }
-  };
-
   return (
     <div className="p-4 md:p-6 max-w-7xl mx-auto pb-20">
       
-      {/* Header & Controls */}
+      {/* Header */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
         <div>
-          <h2 
-            className="text-2xl font-bold border-l-4 pl-3 border-green-500 mb-1"
-            style={{ color: 'var(--app-text)' }}
-          >
+          <h2 className="text-2xl font-bold border-l-4 pl-3 border-green-500 mb-1" style={{ color: 'var(--app-text)' }}>
             角色 ID 名錄
           </h2>
           <p className="text-sm opacity-60" style={{ color: 'var(--app-text)' }}>
-            勾選成員以檢視其分身 ID，點擊卡片即可複製。
+            管理角色資訊、體力與票卷。每日定時自動補給。
           </p>
         </div>
 
         <div className="flex gap-2">
-           {/* 管理功能區 */}
            {currentUser && currentUser !== '訪客' && (
-             <>
-               {/* 只有當資料庫是空的時候，或者你想強制匯入時才顯示這個按鈕 */}
-               {Object.keys(characterData).length === 0 && (
-                 <button 
-                   onClick={handleImportInitialData}
-                   className="flex items-center gap-2 px-3 py-2 rounded bg-yellow-600 text-white shadow hover:bg-yellow-700"
-                 >
-                   <Database size={16}/> 匯入預設資料
-                 </button>
-               )}
-
-               <button 
-                 onClick={() => setIsEditMode(!isEditMode)}
-                 className={`flex items-center gap-2 px-3 py-2 rounded text-white shadow transition-all ${isEditMode ? 'bg-green-600' : 'bg-gray-500'}`}
-               >
-                 {isEditMode ? <Save size={16}/> : <Edit3 size={16}/>}
-                 {isEditMode ? '完成編輯' : '編輯模式'}
-               </button>
-             </>
+             <button 
+               onClick={() => setIsEditMode(!isEditMode)}
+               className={`flex items-center gap-2 px-3 py-2 rounded text-white shadow transition-all ${isEditMode ? 'bg-green-600' : 'bg-gray-500'}`}
+             >
+               {isEditMode ? <Save size={16}/> : <Edit3 size={16}/>}
+               {isEditMode ? '完成編輯' : '編輯模式'}
+             </button>
            )}
         </div>
       </div>
 
       {/* Member Toggles */}
-      <div 
-        className="p-4 rounded-xl shadow-sm mb-6 flex flex-wrap gap-2 transition-colors"
-        style={{ background: 'var(--app-card-bg)' }}
-      >
+      <div className="p-4 rounded-xl shadow-sm mb-6 flex flex-wrap gap-2 transition-colors" style={{ background: 'var(--app-card-bg)' }}>
         <button 
           onClick={() => setSelectedMembers(selectedMembers.length === MEMBERS.length ? [] : MEMBERS)}
           className={`px-3 py-1.5 rounded-full text-sm font-bold border transition-all ${selectedMembers.length === MEMBERS.length ? 'bg-blue-600 text-white border-blue-600' : 'bg-transparent opacity-60 border-gray-500'}`}
@@ -185,8 +316,8 @@ const CharacterListView = ({ isDarkMode, currentUser }) => {
         ))}
       </div>
 
-      {/* Character Lists */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+      {/* Character Grid */}
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
         {MEMBERS.filter(m => selectedMembers.includes(m)).map(member => {
           const chars = characterData[member] || [];
           
@@ -199,60 +330,136 @@ const CharacterListView = ({ isDarkMode, currentUser }) => {
               {/* Member Header */}
               <div className="p-3 border-b border-white/10 flex justify-between items-center bg-black/10">
                 <div className="flex items-center gap-2">
-                  <div className="p-1.5 rounded-full bg-blue-500 text-white">
-                    <User size={16} />
-                  </div>
+                  <div className="p-1.5 rounded-full bg-blue-500 text-white"><User size={16} /></div>
                   <h3 className="font-bold text-lg" style={{ color: 'var(--app-text)' }}>{member}</h3>
-                  <span className="text-xs opacity-50 bg-black/20 px-2 py-0.5 rounded-full" style={{ color: 'var(--app-text)' }}>
-                    {chars.length} 角
-                  </span>
+                  <span className="text-xs opacity-50 bg-black/20 px-2 py-0.5 rounded-full" style={{ color: 'var(--app-text)' }}>{chars.length} 角</span>
                 </div>
               </div>
 
-              {/* Characters Grid */}
-              <div className="p-3 flex-1 flex flex-col gap-2">
+              {/* Characters List */}
+              <div className="p-3 flex-1 flex flex-col gap-3">
                 {chars.length > 0 ? (
-                  chars.map((charName, idx) => (
-                    <div 
-                      key={idx}
-                      className="group flex items-center justify-between p-2 rounded transition-colors relative hover:pl-3"
-                      style={{ background: 'var(--card-bg)', color: 'var(--card-text)' }}
-                    >
-                      <span className="font-mono text-sm truncate select-all">{charName}</span>
-                      
-                      <div className="flex items-center gap-1">
-                        {isEditMode ? (
+                  chars.map((charData, idx) => {
+                    const char = typeof charData === 'string' 
+                      ? { name: charData, gear: '', tickets: 0, stamina: 0, custom: '', note: '' } 
+                      : charData;
+
+                    return (
+                      <div 
+                        key={idx}
+                        className="flex flex-col gap-2 p-3 rounded border border-white/5 shadow-sm relative group bg-black/5"
+                      >
+                        {/* === Row 1: ID | Gear | Copy === */}
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-base flex-1 truncate" style={{ color: 'var(--card-text)' }}>
+                            {char.name}
+                          </span>
+                          
+                          <input 
+                            type="text" 
+                            maxLength={4}
+                            placeholder="裝等"
+                            className="w-14 text-center text-sm p-1 rounded bg-black/10 border border-white/10 outline-none focus:border-blue-500"
+                            style={{ color: 'var(--card-text)' }}
+                            value={char.gear || ''}
+                            onChange={(e) => updateCharacterField(member, idx, 'gear', e.target.value)}
+                          />
+
                           <button 
-                            onClick={() => handleDeleteCharacter(member, charName)}
-                            className="p-1.5 rounded hover:bg-red-500/20 text-gray-400 hover:text-red-500 transition-colors"
+                            onClick={() => handleCopy(char.name)}
+                            className={`p-1.5 rounded transition-colors ${copiedId === char.name ? 'bg-green-500 text-white' : 'bg-white/10 text-gray-400 hover:bg-white/20'}`}
                           >
-                            <Trash2 size={16}/>
+                            {copiedId === char.name ? <Check size={14}/> : <Copy size={14}/>}
                           </button>
-                        ) : (
-                          <button 
-                            onClick={() => handleCopy(charName)}
-                            className={`p-1.5 rounded transition-colors flex items-center gap-1 ${copiedId === charName ? 'bg-green-500 text-white' : 'hover:bg-white/10 text-gray-400 hover:text-white'}`}
-                            title="複製名稱"
-                          >
-                            {copiedId === charName ? <Check size={16}/> : <Copy size={16}/>}
-                          </button>
-                        )}
+
+                          {isEditMode && (
+                            <button 
+                              onClick={() => handleDeleteCharacter(member, idx)}
+                              className="p-1.5 rounded bg-red-500/20 text-red-400 hover:bg-red-500 hover:text-white transition-colors"
+                            >
+                              <Trash2 size={14}/>
+                            </button>
+                          )}
+                        </div>
+
+                        {/* === Row 2: Ticket | Stamina | Runs === */}
+                        <div className="flex items-center gap-2">
+                          {/* Ticket */}
+                          <div className="flex items-center gap-1 flex-1 bg-black/10 rounded px-2 py-1 border border-white/5">
+                            <Ticket size={12} className="text-yellow-500 flex-shrink-0"/>
+                            <input 
+                              type="number" 
+                              maxLength={2}
+                              className="w-full bg-transparent outline-none text-sm text-center font-mono"
+                              placeholder="票"
+                              style={{ color: 'var(--card-text)' }}
+                              value={char.tickets || ''}
+                              onChange={(e) => updateCharacterField(member, idx, 'tickets', e.target.value)}
+                            />
+                          </div>
+
+                          {/* Stamina */}
+                          <div className="flex items-center gap-1 flex-1 bg-black/10 rounded px-2 py-1 border border-white/5">
+                            <Zap size={12} className="text-blue-400 flex-shrink-0"/>
+                            <input 
+                              type="number" 
+                              maxLength={4}
+                              className="w-full bg-transparent outline-none text-sm text-center font-mono"
+                              placeholder="體力"
+                              style={{ color: 'var(--card-text)' }}
+                              value={char.stamina || ''}
+                              onChange={(e) => updateCharacterField(member, idx, 'stamina', e.target.value)}
+                            />
+                          </div>
+
+                          {/* Custom Runs */}
+                          <div className="flex items-center gap-1">
+                            <input 
+                              type="number" 
+                              className="w-8 text-center text-sm p-1 rounded bg-black/10 border border-white/10 outline-none"
+                              placeholder="#"
+                              style={{ color: 'var(--card-text)' }}
+                              value={char.custom || ''}
+                              onChange={(e) => updateCharacterField(member, idx, 'custom', e.target.value)}
+                            />
+                            <button 
+                              className="bg-purple-600 hover:bg-purple-500 text-white text-[10px] px-2 py-1.5 rounded flex items-center gap-1 whitespace-nowrap shadow"
+                              title={`扣除: ${char.custom||0}票 / ${(char.custom||0)*80}體`}
+                              onClick={() => handleCompleteRun(member, idx)}
+                            >
+                              <PlayCircle size={10}/> 完場
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* === Row 3: Note === */}
+                        <div>
+                          <input 
+                            type="text" 
+                            className="w-full text-xs p-1 bg-transparent border-b border-white/10 outline-none focus:border-white/30 placeholder-white/20"
+                            placeholder="備註..."
+                            style={{ color: 'var(--card-text)' }}
+                            value={char.note || ''}
+                            onChange={(e) => updateCharacterField(member, idx, 'note', e.target.value)}
+                          />
+                        </div>
+
                       </div>
-                    </div>
-                  ))
+                    );
+                  })
                 ) : (
                   <div className="text-center py-4 opacity-30 text-sm italic" style={{ color: 'var(--app-text)' }}>
                     尚無角色資料
                   </div>
                 )}
 
-                {/* Add New Character Input */}
+                {/* Add New Input */}
                 {isEditMode && (
-                  <div className="mt-2 flex gap-2 animate-in fade-in slide-in-from-top-2">
+                  <div className="mt-2 flex gap-2 animate-in fade-in">
                     <input 
                       type="text" 
-                      placeholder="輸入 ID..."
-                      className="flex-1 p-2 text-sm rounded border border-gray-500/30 bg-black/20 outline-none focus:border-blue-500 transition-colors"
+                      placeholder="輸入新角色 ID..."
+                      className="flex-1 p-2 text-sm rounded border border-gray-500/30 bg-black/20 outline-none focus:border-blue-500"
                       style={{ color: 'var(--app-text)' }}
                       value={newCharInputs[member] || ''}
                       onChange={(e) => setNewCharInputs({...newCharInputs, [member]: e.target.value})}
