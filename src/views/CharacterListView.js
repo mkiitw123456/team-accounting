@@ -1,7 +1,7 @@
 // src/views/CharacterListView.js
 import React, { useState, useEffect } from 'react';
 import { 
-  Copy, Check, User, Plus, Trash2, Edit3, Save, Database, PlayCircle, Zap, Ticket 
+  Copy, Check, User, Plus, Trash2, Edit3, Save, PlayCircle, Zap, Ticket, GripVertical, X
 } from 'lucide-react';
 import { 
   doc, onSnapshot, setDoc, runTransaction 
@@ -10,12 +10,34 @@ import { db } from '../config/firebase';
 import { MEMBERS } from '../utils/constants'; 
 import { sendLog } from '../utils/helpers';
 
+// === 定義 8 種職業與圖片路徑 (無顏色設定) ===
+// 請確保您的 webp 檔案放在 public/class_icons/ 資料夾內
+const CLASS_ICON_BASE_PATH = process.env.PUBLIC_URL + '/class_icons/';
+
+const CLASS_OPTIONS = [
+  { id: 'gladiator', label: '劍星', img: 'gladiator.webp' },
+  { id: 'templar', label: '守護星', img: 'templar.webp' },
+  { id: 'ranger', label: '弓星', img: 'ranger.webp' },
+  { id: 'assassin', label: '殺星', img: 'assassin.webp' },
+  { id: 'sorcerer', label: '魔導星', img: 'sorcerer.webp' },
+  { id: 'spiritmaster', label: '精靈星', img: 'spiritmaster.webp' },
+  { id: 'cleric', label: '治癒星', img: 'cleric.webp' },
+  { id: 'chanter', label: '護法星', img: 'chanter.webp' },
+];
+
 const CharacterListView = ({ isDarkMode, currentUser }) => {
   const [characterData, setCharacterData] = useState({});
-  const [selectedMembers, setSelectedMembers] = useState(MEMBERS); 
+  const [selectedMembers, setSelectedMembers] = useState([]); 
   const [isEditMode, setIsEditMode] = useState(false);
   const [copiedId, setCopiedId] = useState(null);
   const [newCharInputs, setNewCharInputs] = useState({});
+
+  // 拖曳狀態
+  const [dragItem, setDragItem] = useState(null);
+  const [dragOverItem, setDragOverItem] = useState(null);
+
+  // 職業選擇 Modal 狀態
+  const [classSelector, setClassSelector] = useState({ isOpen: false, member: null, index: null });
 
   // 1. 讀取資料
   useEffect(() => {
@@ -51,19 +73,15 @@ const CharacterListView = ({ isDarkMode, currentUser }) => {
           }
 
           const now = new Date().getTime();
-          // 如果距離上次檢查不到 1 分鐘，就跳過
           if (now - lastTime < 60000) return;
 
-          // 體力：2, 5, 8, 11 (AM/PM) -> 2, 5, 8, 11, 14, 17, 20, 23
-          const STAMINA_HOURS = [2, 5, 8, 11, 14, 17, 20, 23]; // +15
-          // 票卷：05:00, 13:00, 21:00
-          const TICKET_HOURS = [5, 13, 21]; // +1
+          const STAMINA_HOURS = [2, 5, 8, 11, 14, 17, 20, 23]; 
+          const TICKET_HOURS = [5, 13, 21];
 
           let currentData = dataSnap.data();
           let hasChange = false;
           let checkPointer = lastTime > 0 ? lastTime : now - 1;
 
-          // 限制只補回過去 24 小時的 (避免太久沒開一次補太多)
           const ONE_DAY = 24 * 60 * 60 * 1000;
           if (now - checkPointer > ONE_DAY) {
              checkPointer = now - ONE_DAY;
@@ -73,17 +91,14 @@ const CharacterListView = ({ isDarkMode, currentUser }) => {
           let ticketGain = 0;
 
           let pointerDate = new Date(checkPointer);
-          pointerDate.setMinutes(0, 0, 0); // 歸零分秒，從整點開始算
+          pointerDate.setMinutes(0, 0, 0); 
           
-          // 模擬時間推進，檢查經過了幾個關鍵整點
           while (pointerDate.getTime() < now) {
-             // 將指針往後推一小時
              pointerDate.setTime(pointerDate.getTime() + 3600000); 
              
              const hourTimestamp = pointerDate.getTime();
-             const h = pointerDate.getHours();
+             const h = pointerDate.getHours(); 
 
-             // 如果這個整點是在「上次檢查」之後，且在「現在」之前，就觸發獎勵
              if (hourTimestamp > lastTime && hourTimestamp <= now) {
                 if (STAMINA_HOURS.includes(h)) staminaGain += 15;
                 if (TICKET_HOURS.includes(h)) ticketGain += 1;
@@ -95,12 +110,11 @@ const CharacterListView = ({ isDarkMode, currentUser }) => {
              return;
           }
 
-          // 開始更新所有角色
           Object.keys(currentData).forEach(member => {
              const chars = currentData[member];
              if (Array.isArray(chars)) {
                const newChars = chars.map(c => {
-                 if (typeof c === 'string') return c; // 舊格式跳過
+                 if (typeof c === 'string') return c; 
                  return {
                    ...c,
                    stamina: Math.min(9999, (parseInt(c.stamina) || 0) + staminaGain), 
@@ -150,7 +164,7 @@ const CharacterListView = ({ isDarkMode, currentUser }) => {
     const targetChar = currentList[index];
 
     let newCharObj = typeof targetChar === 'string' 
-      ? { name: targetChar, gear: '', tickets: 0, stamina: 0, custom: 0, note: '' }
+      ? { name: targetChar, gear: '', tickets: 0, stamina: 0, custom: 0, note: '', class: null } 
       : { ...targetChar };
 
     newCharObj[field] = value;
@@ -165,14 +179,20 @@ const CharacterListView = ({ isDarkMode, currentUser }) => {
     }
   };
 
-  // 完場扣除邏輯
+  // === 處理選擇職業 ===
+  const handleSelectClass = (classId) => {
+    if (classSelector.member && classSelector.index !== null) {
+      updateCharacterField(classSelector.member, classSelector.index, 'class', classId);
+    }
+    setClassSelector({ isOpen: false, member: null, index: null });
+  };
+
   const handleCompleteRun = async (member, index) => {
     if (currentUser === '訪客') return alert("訪客權限僅供瀏覽");
 
     const currentList = [...(characterData[member] || [])];
     const targetChar = currentList[index];
     
-    // 確保是物件格式
     if (typeof targetChar === 'string') return;
 
     const runs = parseInt(targetChar.custom) || 0;
@@ -184,7 +204,6 @@ const CharacterListView = ({ isDarkMode, currentUser }) => {
     const currentTickets = parseInt(targetChar.tickets) || 0;
     const currentStamina = parseInt(targetChar.stamina) || 0;
 
-    // 雖然可以變成負數，但還是給個提示比較好 (這裡直接扣除，允許負數)
     const newTickets = currentTickets - ticketCost;
     const newStamina = currentStamina - staminaCost;
 
@@ -192,7 +211,7 @@ const CharacterListView = ({ isDarkMode, currentUser }) => {
       ...targetChar,
       tickets: newTickets,
       stamina: newStamina,
-      custom: '' // 扣除完後清空輸入框，避免誤觸
+      custom: '' 
     };
 
     currentList[index] = newCharObj;
@@ -222,7 +241,8 @@ const CharacterListView = ({ isDarkMode, currentUser }) => {
         tickets: 0,
         stamina: 0,
         custom: '',
-        note: ''
+        note: '',
+        class: null 
       };
       
       const newList = [...currentList, newCharObj];
@@ -260,14 +280,71 @@ const CharacterListView = ({ isDarkMode, currentUser }) => {
     }
   };
 
+  // === 拖曳排序邏輯 ===
+  const handleDragStart = (e, member, index) => {
+    if (['INPUT', 'BUTTON', 'SVG', 'PATH', 'IMG'].includes(e.target.tagName)) {
+        return; 
+    }
+    setDragItem({ member, index });
+    e.dataTransfer.effectAllowed = "move";
+  };
+
+  const handleDragEnter = (e, member, index) => {
+    if (dragItem && dragItem.member === member) {
+        setDragOverItem({ member, index });
+    }
+  };
+
+  const handleDragEnd = async () => {
+    if (!dragItem || !dragOverItem) {
+        setDragItem(null);
+        setDragOverItem(null);
+        return;
+    }
+
+    if (dragItem.member === dragOverItem.member) {
+        const member = dragItem.member;
+        const list = [...(characterData[member] || [])];
+        
+        const draggedContent = list[dragItem.index];
+        list.splice(dragItem.index, 1);
+        list.splice(dragOverItem.index, 0, draggedContent);
+
+        setCharacterData(prev => ({ ...prev, [member]: list }));
+
+        try {
+            await setDoc(doc(db, "member_characters", "data"), {
+                [member]: list
+            }, { merge: true });
+        } catch (e) {
+            console.error("Sort update failed", e);
+            alert("排序儲存失敗");
+        }
+    }
+
+    setDragItem(null);
+    setDragOverItem(null);
+  };
+
   return (
-    <div className="p-4 md:p-6 max-w-7xl mx-auto pb-20">
+    <div className="p-4 md:p-6 max-w-7xl mx-auto pb-20 relative">
       
+      <style>{`
+        input[type=number]::-webkit-inner-spin-button, 
+        input[type=number]::-webkit-outer-spin-button { 
+          -webkit-appearance: none; 
+          margin: 0; 
+        }
+        input[type=number] {
+          -moz-appearance: textfield;
+        }
+      `}</style>
+
       {/* Header */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
         <div>
           <h2 className="text-2xl font-bold border-l-4 pl-3 border-green-500 mb-1" style={{ color: 'var(--app-text)' }}>
-            角色 ID 名錄
+            角色列表
           </h2>
           <p className="text-sm opacity-60" style={{ color: 'var(--app-text)' }}>
             管理角色資訊、體力與票卷。每日定時自動補給。
@@ -341,16 +418,57 @@ const CharacterListView = ({ isDarkMode, currentUser }) => {
                 {chars.length > 0 ? (
                   chars.map((charData, idx) => {
                     const char = typeof charData === 'string' 
-                      ? { name: charData, gear: '', tickets: 0, stamina: 0, custom: '', note: '' } 
+                      ? { name: charData, gear: '', tickets: 0, stamina: 0, custom: '', note: '', class: null } 
                       : charData;
+
+                    const isDragging = dragItem && dragItem.member === member && dragItem.index === idx;
+                    const isDragOver = dragOverItem && dragOverItem.member === member && dragOverItem.index === idx;
+
+                    // 找出目前的職業設定
+                    const currentClass = CLASS_OPTIONS.find(c => c.id === char.class);
 
                     return (
                       <div 
                         key={idx}
-                        className="flex flex-col gap-2 p-3 rounded border border-white/5 shadow-sm relative group bg-black/5"
+                        draggable={currentUser !== '訪客'}
+                        onDragStart={(e) => handleDragStart(e, member, idx)}
+                        onDragEnter={(e) => handleDragEnter(e, member, idx)}
+                        onDragEnd={handleDragEnd}
+                        onDragOver={(e) => e.preventDefault()}
+                        
+                        className={`flex flex-col gap-2 p-3 rounded border shadow-sm relative group transition-all
+                          ${isDragging ? 'opacity-40 border-dashed border-white' : 'bg-black/5 border-white/5'}
+                          ${isDragOver ? 'border-blue-500 border-2' : ''}
+                          ${currentUser !== '訪客' ? 'cursor-move' : ''}
+                        `}
                       >
-                        {/* === Row 1: ID | Gear | Copy === */}
+                        {/* === Row 1: Class | Name | Gear | Copy === */}
                         <div className="flex items-center gap-2">
+                          <GripVertical size={14} className="opacity-30 flex-shrink-0" />
+                          
+                          {/* === 職業圖示按鈕 (純圖片模式) === */}
+                          <button
+                            onClick={() => {
+                                if (currentUser === '訪客') return;
+                                setClassSelector({ isOpen: true, member, index: idx });
+                            }}
+                            onMouseDown={(e) => e.stopPropagation()} 
+                            className={`flex items-center justify-center rounded-lg border border-white/10 transition-all hover:brightness-110 active:scale-95 flex-shrink-0 overflow-hidden
+                                ${currentClass ? 'w-8 h-8' : 'w-24 h-8 bg-white/5 hover:bg-white/10'}`}
+                            // 移除 backgroundColor
+                            title={currentClass ? currentClass.label : "點擊設定職業"}
+                          >
+                             {currentClass ? (
+                                 <img 
+                                   src={CLASS_ICON_BASE_PATH + currentClass.img} 
+                                   alt={currentClass.label} 
+                                   className="w-full h-full object-cover"
+                                 />
+                             ) : (
+                                 <span className="text-[10px] opacity-60">點擊選擇職業</span>
+                             )}
+                          </button>
+
                           <span className="font-bold text-base flex-1 truncate" style={{ color: 'var(--card-text)' }}>
                             {char.name}
                           </span>
@@ -363,10 +481,12 @@ const CharacterListView = ({ isDarkMode, currentUser }) => {
                             style={{ color: 'var(--card-text)' }}
                             value={char.gear || ''}
                             onChange={(e) => updateCharacterField(member, idx, 'gear', e.target.value)}
+                            onMouseDown={(e) => e.stopPropagation()}
                           />
 
                           <button 
                             onClick={() => handleCopy(char.name)}
+                            onMouseDown={(e) => e.stopPropagation()} 
                             className={`p-1.5 rounded transition-colors ${copiedId === char.name ? 'bg-green-500 text-white' : 'bg-white/10 text-gray-400 hover:bg-white/20'}`}
                           >
                             {copiedId === char.name ? <Check size={14}/> : <Copy size={14}/>}
@@ -375,6 +495,7 @@ const CharacterListView = ({ isDarkMode, currentUser }) => {
                           {isEditMode && (
                             <button 
                               onClick={() => handleDeleteCharacter(member, idx)}
+                              onMouseDown={(e) => e.stopPropagation()} 
                               className="p-1.5 rounded bg-red-500/20 text-red-400 hover:bg-red-500 hover:text-white transition-colors"
                             >
                               <Trash2 size={14}/>
@@ -395,6 +516,7 @@ const CharacterListView = ({ isDarkMode, currentUser }) => {
                               style={{ color: 'var(--card-text)' }}
                               value={char.tickets || ''}
                               onChange={(e) => updateCharacterField(member, idx, 'tickets', e.target.value)}
+                              onMouseDown={(e) => e.stopPropagation()}
                             />
                           </div>
 
@@ -409,6 +531,7 @@ const CharacterListView = ({ isDarkMode, currentUser }) => {
                               style={{ color: 'var(--card-text)' }}
                               value={char.stamina || ''}
                               onChange={(e) => updateCharacterField(member, idx, 'stamina', e.target.value)}
+                              onMouseDown={(e) => e.stopPropagation()}
                             />
                           </div>
 
@@ -417,15 +540,17 @@ const CharacterListView = ({ isDarkMode, currentUser }) => {
                             <input 
                               type="number" 
                               className="w-8 text-center text-sm p-1 rounded bg-black/10 border border-white/10 outline-none"
-                              placeholder="#"
+                              placeholder="" 
                               style={{ color: 'var(--card-text)' }}
                               value={char.custom || ''}
                               onChange={(e) => updateCharacterField(member, idx, 'custom', e.target.value)}
+                              onMouseDown={(e) => e.stopPropagation()}
                             />
                             <button 
                               className="bg-purple-600 hover:bg-purple-500 text-white text-[10px] px-2 py-1.5 rounded flex items-center gap-1 whitespace-nowrap shadow"
                               title={`扣除: ${char.custom||0}票 / ${(char.custom||0)*80}體`}
                               onClick={() => handleCompleteRun(member, idx)}
+                              onMouseDown={(e) => e.stopPropagation()}
                             >
                               <PlayCircle size={10}/> 完場
                             </button>
@@ -441,6 +566,7 @@ const CharacterListView = ({ isDarkMode, currentUser }) => {
                             style={{ color: 'var(--card-text)' }}
                             value={char.note || ''}
                             onChange={(e) => updateCharacterField(member, idx, 'note', e.target.value)}
+                            onMouseDown={(e) => e.stopPropagation()}
                           />
                         </div>
 
@@ -479,6 +605,57 @@ const CharacterListView = ({ isDarkMode, currentUser }) => {
           );
         })}
       </div>
+
+      {/* === 職業選擇 Modal (純圖片) === */}
+      {classSelector.isOpen && (
+        <div 
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in"
+          onClick={() => setClassSelector({ isOpen: false, member: null, index: null })}
+        >
+          <div 
+            className={`w-full max-w-sm rounded-xl p-6 shadow-2xl scale-100 animate-in zoom-in-95 duration-200 ${isDarkMode ? 'bg-gray-800 text-white' : 'bg-white text-gray-800'}`}
+            onClick={(e) => e.stopPropagation()} // 防止點擊內部關閉
+          >
+            <div className="flex justify-between items-center mb-4">
+               <h3 className="font-bold text-lg flex items-center gap-2"><User size={20}/> 選擇職業</h3>
+               <button onClick={() => setClassSelector({ isOpen: false, member: null, index: null })} className="p-1 rounded hover:bg-gray-500/20"><X size={20}/></button>
+            </div>
+            
+            <div className="grid grid-cols-4 gap-3">
+               {CLASS_OPTIONS.map(opt => (
+                 <button
+                   key={opt.id}
+                   onClick={() => handleSelectClass(opt.id)}
+                   className="flex flex-col items-center justify-center gap-2 p-2 rounded-lg border border-transparent hover:border-gray-500/30 hover:bg-black/5 transition-all active:scale-95"
+                 >
+                   <div 
+                     className="w-12 h-12 rounded overflow-hidden shadow-lg bg-black/20"
+                   >
+                     <img 
+                       src={CLASS_ICON_BASE_PATH + opt.img} 
+                       alt={opt.label} 
+                       className="w-full h-full object-cover"
+                     />
+                   </div>
+                   <span className="text-xs font-bold opacity-80">{opt.label}</span>
+                 </button>
+               ))}
+               
+               {/* 清除按鈕 */}
+               <button
+                   onClick={() => handleSelectClass(null)}
+                   className="flex flex-col items-center justify-center gap-2 p-2 rounded-lg border border-dashed border-gray-400/50 hover:bg-black/5 transition-all active:scale-95 opacity-60 hover:opacity-100"
+               >
+                   <div className="w-12 h-12 rounded flex items-center justify-center bg-gray-400/20">
+                     <X size={24} className="opacity-50"/>
+                   </div>
+                   <span className="text-xs font-bold">清除</span>
+               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 };

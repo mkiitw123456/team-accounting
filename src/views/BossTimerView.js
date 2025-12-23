@@ -1,7 +1,7 @@
 // src/views/BossTimerView.js
 import React, { useState, useEffect } from 'react';
 import { 
-  Clock, Plus, Tag, Zap, RefreshCcw, List, Map as MapIcon, Edit3, Trash2, RefreshCw, X, Star, Calendar 
+  Clock, Plus, Tag, Zap, RefreshCcw, List, Map as MapIcon, Edit3, Trash2, RefreshCw, X, Star, Calendar, Mic, MicOff
 } from 'lucide-react';
 import { 
   collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, query, orderBy, writeBatch 
@@ -30,6 +30,9 @@ const BossTimerView = ({ isDarkMode, currentUser, globalSettings }) => {
   const [isAddRecordModalOpen, setIsAddRecordModalOpen] = useState(false);
   const [isQuickTagOpen, setIsQuickTagOpen] = useState(false); 
   const [isTimelineOpen, setIsTimelineOpen] = useState(false);
+
+  // === 修正 1: 將語音狀態移入元件內部 ===
+  const [isListening, setIsListening] = useState(false);
 
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
   const [editingBossId, setEditingBossId] = useState(null);
@@ -140,14 +143,12 @@ const BossTimerView = ({ isDarkMode, currentUser, globalSettings }) => {
   const handleQuickRefresh = async (event) => {
     if (!db) return;
     
-    // 1. 嘗試從 Templates 找重生間隔 (分鐘)
     let intervalMinutes = 0;
     const template = bossTemplates.find(t => t.id === event.templateId);
     
     if (template) {
       intervalMinutes = template.respawnMinutes;
     } else {
-      // 2. 如果 Template 被刪了，從現有紀錄反推 (RespawTime - DeathTime)
       if (event.respawnTime && event.deathTime) {
         const diffMs = new Date(event.respawnTime) - new Date(event.deathTime);
         intervalMinutes = Math.round(diffMs / 60000);
@@ -167,13 +168,13 @@ const BossTimerView = ({ isDarkMode, currentUser, globalSettings }) => {
       return { ...prev, [event.id]: newHistory };
     });
 
-    const baseTime = new Date(); // 當前時間
+    const baseTime = new Date(); 
     const newRespawnTime = new Date(baseTime.getTime() + intervalMinutes * 60000);
 
     try {
       await updateDoc(doc(db, "boss_events", event.id), {
-        deathTime: baseTime.toISOString(), // 死亡時間 = 現在
-        respawnTime: newRespawnTime.toISOString() // 重生時間 = 現在 + 週期
+        deathTime: baseTime.toISOString(),
+        respawnTime: newRespawnTime.toISOString() 
       });
       sendLog(currentUser, "快速刷新", `${event.name}`);
       showToast(`🔄 已刷新：${event.name}`);
@@ -208,6 +209,71 @@ const BossTimerView = ({ isDarkMode, currentUser, globalSettings }) => {
       alert("回復失敗");
     }
   };
+
+  // === 修正 2: 將語音功能函式移入元件內部 (現在它們可以讀到 bossTemplates 等變數了) ===
+  const startVoiceCommand = () => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      alert("您的瀏覽器不支援語音辨識，請使用 Chrome 或 Edge。");
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.lang = 'zh-TW'; 
+    recognition.interimResults = false; 
+    recognition.maxAlternatives = 1;
+
+    setIsListening(true);
+
+    recognition.onstart = () => {
+      showToast("🎙️ 請說話... (例: 諾布魯德刷新)");
+    };
+
+    recognition.onresult = (event) => {
+      const transcript = event.results[0][0].transcript;
+      console.log("語音辨識結果:", transcript);
+      handleVoiceAction(transcript);
+    };
+
+    recognition.onend = () => {
+      setIsListening(false);
+    };
+
+    recognition.onerror = (event) => {
+      console.error("語音辨識錯誤", event.error);
+      setIsListening(false);
+      showToast("❌ 辨識失敗，請重試");
+    };
+
+    recognition.start();
+  };
+
+  const handleVoiceAction = (text) => {
+    const actionKeywords = ['刷新', '死', '倒', '掛', '更新'];
+    const hasAction = actionKeywords.some(keyword => text.includes(keyword));
+
+    if (!hasAction) {
+      showToast(`❓ 聽不懂指令: "${text}" (需包含刷新/死亡)`);
+      return;
+    }
+
+    const matchedTemplate = bossTemplates.find(t => text.includes(t.name));
+
+    if (matchedTemplate) {
+      const existingEvent = bossEvents.find(e => e.templateId === matchedTemplate.id);
+
+      if (existingEvent) {
+        handleQuickRefresh(existingEvent);
+        showToast(`🎙️ 語音觸發: 刷新 ${matchedTemplate.name}`);
+      } else {
+        handleAddQuickRecord(matchedTemplate);
+        showToast(`🎙️ 語音觸發: 新增 ${matchedTemplate.name}`);
+      }
+    } else {
+      showToast(`❌ 找不到 Boss: "${text}"`);
+    }
+  };
+  // =================================================================
 
   const handleOpenCreateBoss = (bossToEdit = null) => {
     if (currentUser === '訪客') return alert("訪客權限僅供瀏覽");
@@ -358,12 +424,10 @@ const BossTimerView = ({ isDarkMode, currentUser, globalSettings }) => {
     setNewBossForm(prev => ({ ...prev, mapPos: { x, y } }));
   };
 
-  // === 修改重點 1: 移除 other 分類 ===
   const groupedEvents = {
     yesterday: bossEvents.filter(e => getRelativeDay(e.respawnTime) === 'yesterday'),
     today: bossEvents.filter(e => getRelativeDay(e.respawnTime) === 'today'),
     tomorrow: bossEvents.filter(e => getRelativeDay(e.respawnTime) === 'tomorrow'),
-    // other: bossEvents.filter(e => getRelativeDay(e.respawnTime) === 'other'), // 已移除
   };
 
   const displayEvents = bossEvents.sort((a, b) => new Date(a.respawnTime) - new Date(b.respawnTime));
@@ -430,8 +494,24 @@ const BossTimerView = ({ isDarkMode, currentUser, globalSettings }) => {
           <Zap size={18}/> 快速標籤
         </button>
 
+        {/* === 修正 3: 加入語音按鈕 === */}
+        <button 
+           onClick={() => {
+             if (currentUser === '訪客') return alert("訪客權限僅供瀏覽");
+             if (isListening) return; 
+             startVoiceCommand();
+           }} 
+           className={`flex items-center gap-2 px-4 py-2 rounded shadow transition-all
+             ${isListening 
+               ? 'bg-red-500 text-white animate-pulse' 
+               : 'bg-indigo-500 text-white hover:bg-indigo-600'}`}
+           title="點擊後說出: [Boss名稱] + 刷新/死亡"
+        >
+          {isListening ? <MicOff size={18}/> : <Mic size={18}/>}
+          {isListening ? '聆聽中...' : '語音指令'}
+        </button>
+
         <div className="ml-auto bg-gray-200 rounded-lg p-1 flex">
-           {/* Timeline Button */}
            <button onClick={() => setIsTimelineOpen(true)} className={`px-3 py-1 rounded flex items-center gap-1 text-sm border-r border-gray-300 text-gray-500 hover:text-orange-500 hover:bg-gray-100`}>
              <Calendar size={14}/> 時間線
            </button>
@@ -450,7 +530,6 @@ const BossTimerView = ({ isDarkMode, currentUser, globalSettings }) => {
 
       <div className="flex flex-col lg:flex-row gap-6 h-full overflow-hidden">
         {viewMode === 'LIST' ? (
-          /* === 修改重點 2: 改為 grid-cols-3，且只遍歷 yesterday, today, tomorrow === */
           <div className="flex-1 grid grid-cols-1 md:grid-cols-3 gap-4 h-full overflow-y-auto pb-20">
             {['yesterday', 'today', 'tomorrow'].map(dayKey => (
               <div 

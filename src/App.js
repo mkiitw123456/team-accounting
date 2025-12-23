@@ -206,19 +206,21 @@ export default function App() {
              >
                 {currentTab === 'ACCOUNTING' ? <Calculator size={24} /> : 
                  currentTab === 'BOSS_TIMER' ? <ShieldAlert size={24} /> : 
+                 currentTab === 'CHARACTER_LIST' ? <Users size={24} /> :
                  <Bot size={24} />}
              </div>
+             {/* 修改文字 1：角色列表 */}
              <h1 className="text-2xl font-bold tracking-wider hidden md:block">
                {currentTab === 'ACCOUNTING' ? '團隊記帳表' : 
                 currentTab === 'BOSS_TIMER' ? 'Boss 重生計時' : 
-                currentTab === 'CHARACTER_LIST' ? '角色 ID 名錄' :
+                currentTab === 'CHARACTER_LIST' ? '角色列表' :
                 'AI 財務助手'}
              </h1>
              <div className="flex md:hidden rounded-lg p-1" style={{ background: 'rgba(0,0,0,0.2)' }}>
                 <button onClick={()=>setCurrentTab('ACCOUNTING')} className={`px-2 py-1 rounded text-xs ${currentTab==='ACCOUNTING'?'bg-blue-600 text-white':''}`}>記帳</button>
                 <button onClick={()=>setCurrentTab('BOSS_TIMER')} className={`px-2 py-1 rounded text-xs ${currentTab==='BOSS_TIMER'?'bg-purple-600 text-white':''}`}>Boss</button>
                 <button onClick={()=>setCurrentTab('AI_ASSISTANT')} className={`px-2 py-1 rounded text-xs ${currentTab==='AI_ASSISTANT'?'bg-yellow-500 text-white':''}`}>AI</button>
-                <button onClick={()=>setCurrentTab('CHARACTER_LIST')} className={`px-2 py-1 rounded text-xs ${currentTab==='CHARACTER_LIST'?'bg-green-600 text-white':''}`}>ID表</button>
+                <button onClick={()=>setCurrentTab('CHARACTER_LIST')} className={`px-2 py-1 rounded text-xs ${currentTab==='CHARACTER_LIST'?'bg-green-600 text-white':''}`}>角色</button>
              </div>
           </div>
 
@@ -271,15 +273,14 @@ export default function App() {
                >
                  <Bot size={16}/> AI 助手
                </button>
+               {/* 修改文字 2：角色列表 */}
                <button 
                  onClick={() => setCurrentTab('CHARACTER_LIST')}
                  className={`flex items-center gap-2 px-4 py-1.5 rounded-md transition-all ${currentTab === 'CHARACTER_LIST' ? 'bg-green-600 text-white shadow' : 'hover:bg-white/10 opacity-70'}`}
                >
-                 <Users size={16}/> 角色 ID
+                 <Users size={16}/> 角色列表
                </button>
             </div>
-
-            {/* === 修改 2: 移除太陽月亮切換按鈕 === */}
           </div>
         </div>
       </nav>
