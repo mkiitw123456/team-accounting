@@ -1,7 +1,7 @@
 // src/views/BossTimerView.js
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
-  Clock, Plus, Tag, Zap, RefreshCcw, List, Map as MapIcon, Edit3, Trash2, RefreshCw, X, Star, Calendar, Mic, MicOff
+  Clock, Plus, Tag, Zap, RefreshCcw, List, Map as MapIcon, Edit3, Trash2, RefreshCw, X, Star, Calendar, Mic, MicOff, Activity
 } from 'lucide-react';
 import { 
   collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, query, orderBy, writeBatch 
@@ -31,13 +31,15 @@ const BossTimerView = ({ isDarkMode, currentUser, globalSettings }) => {
   const [isQuickTagOpen, setIsQuickTagOpen] = useState(false); 
   const [isTimelineOpen, setIsTimelineOpen] = useState(false);
 
-  // === 修正 1: 將語音狀態移入元件內部 ===
-  const [isListening, setIsListening] = useState(false);
-
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
   const [editingBossId, setEditingBossId] = useState(null);
   const [editingEventId, setEditingEventId] = useState(null);
   const [viewMode, setViewMode] = useState('LIST');
+
+  // === 語音辨識相關 State 與 Ref ===
+  const [isListening, setIsListening] = useState(false); // UI 狀態
+  const isListeningRef = useRef(false); // 邏輯判斷用 Ref (避免 Closure 問題)
+  const recognitionRef = useRef(null);  // 儲存識別物件
 
   const [newBossForm, setNewBossForm] = useState({ name: '', respawnMinutes: 60, color: '#FF5733', mapPos: null, stars: 0 });
   const [recordForm, setRecordForm] = useState({ 
@@ -73,6 +75,141 @@ const BossTimerView = ({ isDarkMode, currentUser, globalSettings }) => {
     }, 1000); 
     return () => clearInterval(timer);
   }, [bossEvents]); 
+
+  // === 語音辨識核心邏輯 ===
+  
+  // 1. 切換監聽開關
+  const toggleVoiceCommand = () => {
+    if (isListening) {
+      // 關閉
+      stopListening();
+    } else {
+      // 開啟
+      startListening();
+    }
+  };
+
+  const startListening = () => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      alert("您的瀏覽器不支援語音辨識，請使用 Chrome 或 Edge。");
+      return;
+    }
+
+    // 更新狀態
+    setIsListening(true);
+    isListeningRef.current = true;
+
+    // 初始化識別物件
+    const recognition = new SpeechRecognition();
+    recognition.lang = 'zh-TW'; 
+    recognition.interimResults = false; 
+    recognition.maxAlternatives = 1;
+    recognition.continuous = false; // 我們用手動 Loop 來模擬持續監聽，相容性較好
+
+    recognition.onstart = () => {
+      console.log("語音監聽已啟動...");
+    };
+
+    recognition.onresult = (event) => {
+      const transcript = event.results[0][0].transcript;
+      console.log("收到語音:", transcript);
+      handleVoiceAction(transcript);
+    };
+
+    recognition.onend = () => {
+      // 如果狀態還是 "監聽中"，就立刻重啟 (達成持續監聽效果)
+      if (isListeningRef.current) {
+        try {
+            recognition.start();
+        } catch (e) {
+            console.error("重啟語音失敗", e);
+            // 防止死循環，稍後重試
+            setTimeout(() => {
+                if (isListeningRef.current) recognition.start();
+            }, 1000);
+        }
+      } else {
+        console.log("語音監聽已停止");
+      }
+    };
+
+    recognition.onerror = (event) => {
+      console.error("語音錯誤", event.error);
+      // 遇到錯誤不停止，嘗試忽略並繼續監聽
+    };
+
+    recognitionRef.current = recognition;
+    recognition.start();
+    showToast("🎙️ 語音助手已開啟 (再次點擊可關閉)");
+  };
+
+  const stopListening = () => {
+    setIsListening(false);
+    isListeningRef.current = false;
+    if (recognitionRef.current) {
+      recognitionRef.current.stop();
+    }
+    showToast("🔇 語音助手已關閉");
+  };
+
+  // 2. 處理語音指令 (含模糊比對)
+  const handleVoiceAction = (text) => {
+    // 關鍵字檢查 (必須包含動作)
+    const actionKeywords = ['刷新', '死', '倒', '掛', '更新'];
+    const hasAction = actionKeywords.some(keyword => text.includes(keyword));
+
+    if (!hasAction) {
+        // 如果沒有動作關鍵字，我們就不回應，以免干擾
+        return;
+    }
+
+    // 比對 Boss 名稱 (找出最相似的)
+    let bestMatch = null;
+    let maxScore = 0;
+
+    bossTemplates.forEach(template => {
+        const score = calculateSimilarity(text, template.name);
+        if (score > maxScore) {
+            maxScore = score;
+            bestMatch = template;
+        }
+    });
+
+    // 設定門檻值：相似度超過 0.6 (60%) 就算對應成功
+    // 例如 "諾布魯德" (4字) 對應 "諾布魯得刷新"，"諾布魯得" 3字相符，3/4 = 0.75 -> Pass
+    if (bestMatch && maxScore >= 0.6) {
+        const existingEvent = bossEvents.find(e => e.templateId === bestMatch.id);
+        if (existingEvent) {
+            handleQuickRefresh(existingEvent);
+            showToast(`🎙️ 語音: 刷新 ${bestMatch.name}`);
+        } else {
+            handleAddQuickRecord(bestMatch);
+            showToast(`🎙️ 語音: 新增 ${bestMatch.name}`);
+        }
+    } else {
+        // 只有當確定是在對系統說話但找不到人時才提示，避免太吵
+        // console.log("找不到匹配的 Boss，最高分:", maxScore);
+    }
+  };
+
+  // 簡單的模糊比對演算法：計算 templateName 裡的字有多少出現在 text 裡
+  const calculateSimilarity = (text, templateName) => {
+     if (!templateName) return 0;
+     const cleanText = text.replace(/[刷新死倒掛更新]/g, ""); // 移除動作關鍵字，只比對名字
+     let matchCount = 0;
+     const targetChars = templateName.split('');
+     
+     targetChars.forEach(char => {
+         if (cleanText.includes(char)) {
+             matchCount++;
+         }
+     });
+
+     return matchCount / targetChars.length;
+  };
+
+  // ... (以下為原本的處理函式，保持不變) ...
 
   const handleSyncMapPositions = async () => {
     if (currentUser === '訪客') return alert("訪客權限僅供瀏覽");
@@ -209,71 +346,6 @@ const BossTimerView = ({ isDarkMode, currentUser, globalSettings }) => {
       alert("回復失敗");
     }
   };
-
-  // === 修正 2: 將語音功能函式移入元件內部 (現在它們可以讀到 bossTemplates 等變數了) ===
-  const startVoiceCommand = () => {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      alert("您的瀏覽器不支援語音辨識，請使用 Chrome 或 Edge。");
-      return;
-    }
-
-    const recognition = new SpeechRecognition();
-    recognition.lang = 'zh-TW'; 
-    recognition.interimResults = false; 
-    recognition.maxAlternatives = 1;
-
-    setIsListening(true);
-
-    recognition.onstart = () => {
-      showToast("🎙️ 請說話... (例: 諾布魯德刷新)");
-    };
-
-    recognition.onresult = (event) => {
-      const transcript = event.results[0][0].transcript;
-      console.log("語音辨識結果:", transcript);
-      handleVoiceAction(transcript);
-    };
-
-    recognition.onend = () => {
-      setIsListening(false);
-    };
-
-    recognition.onerror = (event) => {
-      console.error("語音辨識錯誤", event.error);
-      setIsListening(false);
-      showToast("❌ 辨識失敗，請重試");
-    };
-
-    recognition.start();
-  };
-
-  const handleVoiceAction = (text) => {
-    const actionKeywords = ['刷新', '死', '倒', '掛', '更新'];
-    const hasAction = actionKeywords.some(keyword => text.includes(keyword));
-
-    if (!hasAction) {
-      showToast(`❓ 聽不懂指令: "${text}" (需包含刷新/死亡)`);
-      return;
-    }
-
-    const matchedTemplate = bossTemplates.find(t => text.includes(t.name));
-
-    if (matchedTemplate) {
-      const existingEvent = bossEvents.find(e => e.templateId === matchedTemplate.id);
-
-      if (existingEvent) {
-        handleQuickRefresh(existingEvent);
-        showToast(`🎙️ 語音觸發: 刷新 ${matchedTemplate.name}`);
-      } else {
-        handleAddQuickRecord(matchedTemplate);
-        showToast(`🎙️ 語音觸發: 新增 ${matchedTemplate.name}`);
-      }
-    } else {
-      showToast(`❌ 找不到 Boss: "${text}"`);
-    }
-  };
-  // =================================================================
 
   const handleOpenCreateBoss = (bossToEdit = null) => {
     if (currentUser === '訪客') return alert("訪客權限僅供瀏覽");
@@ -494,21 +566,20 @@ const BossTimerView = ({ isDarkMode, currentUser, globalSettings }) => {
           <Zap size={18}/> 快速標籤
         </button>
 
-        {/* === 修正 3: 加入語音按鈕 === */}
+        {/* === 修改後的語音按鈕：切換式 (Toggle) === */}
         <button 
            onClick={() => {
              if (currentUser === '訪客') return alert("訪客權限僅供瀏覽");
-             if (isListening) return; 
-             startVoiceCommand();
+             toggleVoiceCommand();
            }} 
-           className={`flex items-center gap-2 px-4 py-2 rounded shadow transition-all
+           className={`flex items-center gap-2 px-4 py-2 rounded shadow transition-all duration-300
              ${isListening 
-               ? 'bg-red-500 text-white animate-pulse' 
+               ? 'bg-red-600 text-white animate-pulse ring-2 ring-red-400 ring-offset-2' 
                : 'bg-indigo-500 text-white hover:bg-indigo-600'}`}
-           title="點擊後說出: [Boss名稱] + 刷新/死亡"
+           title={isListening ? "點擊關閉監聽" : "點擊開啟語音助手"}
         >
-          {isListening ? <MicOff size={18}/> : <Mic size={18}/>}
-          {isListening ? '聆聽中...' : '語音指令'}
+          {isListening ? <Activity size={18}/> : <Mic size={18}/>}
+          {isListening ? '監聽中...' : '語音助手'}
         </button>
 
         <div className="ml-auto bg-gray-200 rounded-lg p-1 flex">
