@@ -1,7 +1,7 @@
 // src/views/CharacterListView.js
 import React, { useState, useEffect, useRef } from 'react';
 import { 
-  Copy, Check, User, Plus, Trash2, Edit3, Save, PlayCircle, Zap, Ticket, GripVertical, X
+  Copy, Check, User, Plus, Trash2, Edit3, Save, PlayCircle, Zap, GripVertical, X, BatteryCharging, Hammer, Package
 } from 'lucide-react';
 import { 
   doc, onSnapshot, setDoc, runTransaction 
@@ -23,18 +23,21 @@ const CLASS_OPTIONS = [
   { id: 'chanter', label: '護法星', img: 'chanter.webp' },
 ];
 
-// === 新增：防抖動輸入框元件 (解決新注音與效能問題) ===
+// 體力設定常數
+const BASE_STAMINA_CAP = 840;
+const EXTRA_STAMINA_CAP = 2000;
+const STAMINA_PER_RUN = 80;
+
+// === 防抖動輸入框元件 ===
 const EditableField = ({ value, onSave, type = "text", className, placeholder, ...props }) => {
   const [localValue, setLocalValue] = useState(value || '');
-  const isComposing = useRef(false); // 追蹤是否正在使用輸入法組字
+  const isComposing = useRef(false);
 
-  // 當外部資料(如AutoRegen)改變時，同步更新內部數值
   useEffect(() => {
     setLocalValue(value || '');
   }, [value]);
 
   const handleBlur = () => {
-    // 只有當數值真的有變動時，才觸發存檔
     if (localValue != value) {
       onSave(localValue);
     }
@@ -42,7 +45,7 @@ const EditableField = ({ value, onSave, type = "text", className, placeholder, .
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !isComposing.current) {
-      e.target.blur(); // 按 Enter 觸發 blur 來存檔
+      e.target.blur();
     }
   };
 
@@ -52,14 +55,11 @@ const EditableField = ({ value, onSave, type = "text", className, placeholder, .
       className={className}
       placeholder={placeholder}
       value={localValue}
-      // 處理輸入法組字開始
       onCompositionStart={() => { isComposing.current = true; }}
-      // 處理輸入法組字結束
       onCompositionEnd={() => { isComposing.current = false; }}
       onChange={(e) => setLocalValue(e.target.value)}
       onBlur={handleBlur}
       onKeyDown={handleKeyDown}
-      // 阻止拖曳事件傳播，避免在輸入時觸發卡片拖曳 (雙重保險)
       onMouseDown={(e) => e.stopPropagation()}
       onTouchStart={(e) => e.stopPropagation()}
       {...props}
@@ -70,7 +70,7 @@ const EditableField = ({ value, onSave, type = "text", className, placeholder, .
 const CharacterListView = ({ isDarkMode, currentUser }) => {
   const [characterData, setCharacterData] = useState({});
   
-  // 初始化篩選名單 (LocalStorage)
+  // 初始化篩選名單
   const [selectedMembers, setSelectedMembers] = useState(() => {
     try {
       const saved = localStorage.getItem('selected_members_filter');
@@ -90,7 +90,6 @@ const CharacterListView = ({ isDarkMode, currentUser }) => {
   const [dragOverItem, setDragOverItem] = useState(null);
   const [classSelector, setClassSelector] = useState({ isOpen: false, member: null, index: null });
 
-  // 儲存篩選狀態
   useEffect(() => {
     localStorage.setItem('selected_members_filter', JSON.stringify(selectedMembers));
   }, [selectedMembers]);
@@ -108,7 +107,7 @@ const CharacterListView = ({ isDarkMode, currentUser }) => {
     return () => unsub();
   }, []);
 
-  // 自動回復機制 (Auto Regen)
+  // === 自動回復與重置機制 (Auto Regen & Reset) ===
   useEffect(() => {
     if (!db) return;
     const checkAndApplyRegen = async () => {
@@ -125,46 +124,77 @@ const CharacterListView = ({ isDarkMode, currentUser }) => {
           if (statusSnap.exists()) lastTime = statusSnap.data().lastCheckTime || 0;
 
           const now = new Date().getTime();
+          // 至少間隔 1 分鐘才檢查，避免頻繁寫入
           if (now - lastTime < 60000) return;
 
+          // 體力回復時間點
           const STAMINA_HOURS = [2, 5, 8, 11, 14, 17, 20, 23]; 
-          const TICKET_HOURS = [5, 13, 21];
-
+          
           let currentData = dataSnap.data();
           let hasChange = false;
           let checkPointer = lastTime > 0 ? lastTime : now - 1;
 
+          // 防止過久未執行導致迴圈過大 (限制最多補算 24 小時)
           const ONE_DAY = 24 * 60 * 60 * 1000;
           if (now - checkPointer > ONE_DAY) checkPointer = now - ONE_DAY;
 
-          let staminaGain = 0;
-          let ticketGain = 0;
+          let staminaGainMultiplier = 0; // 紀錄要加幾次體力
+          let shouldResetCraft = false; // 是否重置製作體 (週一 00:00)
+          let shouldReset100k = false;  // 是否重置10萬體 (週三 05:00)
+
           let pointerDate = new Date(checkPointer);
+          // 將指針設為該小時的開始，方便計算跨越
           pointerDate.setMinutes(0, 0, 0); 
           
+          // 模擬時間推進 (每小時檢查一次)
           while (pointerDate.getTime() < now) {
-             pointerDate.setTime(pointerDate.getTime() + 3600000); 
-             const h = pointerDate.getHours(); 
+             pointerDate.setTime(pointerDate.getTime() + 3600000); // +1 Hour
+             const h = pointerDate.getHours();
+             const day = pointerDate.getDay(); // 0=Sun, 1=Mon, ..., 3=Wed
+
+             // 只有當這個時間點介於 上次檢查 與 現在 之間，才觸發
              if (pointerDate.getTime() > lastTime && pointerDate.getTime() <= now) {
-                if (STAMINA_HOURS.includes(h)) staminaGain += 15;
-                if (TICKET_HOURS.includes(h)) ticketGain += 1;
+                // 1. 體力回復
+                if (STAMINA_HOURS.includes(h)) staminaGainMultiplier += 1;
+
+                // 2. 製作體重置 (週一 00:00)
+                if (day === 1 && h === 0) shouldResetCraft = true;
+
+                // 3. 10萬體重置 (週三 05:00)
+                if (day === 3 && h === 5) shouldReset100k = true;
              }
           }
 
-          if (staminaGain === 0 && ticketGain === 0) {
+          if (staminaGainMultiplier === 0 && !shouldResetCraft && !shouldReset100k) {
+             // 沒事發生，只更新時間
              transaction.set(statusRef, { lastCheckTime: now }, { merge: true });
              return;
           }
 
+          // 套用變更到所有角色
           Object.keys(currentData).forEach(member => {
              const chars = currentData[member];
              if (Array.isArray(chars)) {
                const newChars = chars.map(c => {
                  if (typeof c === 'string') return c; 
+                 
+                 let newStamina = parseInt(c.stamina) || 0;
+                 // 套用基礎體力回復 (上限 840)
+                 if (staminaGainMultiplier > 0) {
+                     newStamina = Math.min(BASE_STAMINA_CAP, newStamina + (staminaGainMultiplier * 15));
+                 }
+
+                 let newCraftStamina = parseInt(c.craftStamina) || 0;
+                 if (shouldResetCraft) newCraftStamina = 0;
+
+                 let newStamina100k = parseInt(c.stamina100k) || 0;
+                 if (shouldReset100k) newStamina100k = 0;
+
                  return {
                    ...c,
-                   stamina: Math.min(9999, (parseInt(c.stamina) || 0) + staminaGain), 
-                   tickets: Math.min(99, (parseInt(c.tickets) || 0) + ticketGain)
+                   stamina: newStamina,
+                   craftStamina: newCraftStamina,
+                   stamina100k: newStamina100k
                  };
                });
                currentData[member] = newChars;
@@ -175,13 +205,19 @@ const CharacterListView = ({ isDarkMode, currentUser }) => {
           if (hasChange) {
              transaction.set(dataRef, currentData);
              transaction.set(statusRef, { lastCheckTime: now }, { merge: true });
-             console.log(`[Regen] 全體回復: 體力+${staminaGain}, 票卷+${ticketGain}`);
+             
+             let logMsg = [];
+             if (staminaGainMultiplier > 0) logMsg.push(`體力+${staminaGainMultiplier * 15}`);
+             if (shouldResetCraft) logMsg.push(`製作體重置`);
+             if (shouldReset100k) logMsg.push(`10萬體重置`);
+             console.log(`[System] 全體更新: ${logMsg.join(', ')}`);
           }
         });
-      } catch (e) { console.error("Auto Regen Failed", e); }
+      } catch (e) { console.error("Auto Regen/Reset Failed", e); }
     };
+
     checkAndApplyRegen();
-    const interval = setInterval(checkAndApplyRegen, 60000);
+    const interval = setInterval(checkAndApplyRegen, 60000); // 每分鐘檢查一次
     return () => clearInterval(interval);
   }, []); 
 
@@ -203,9 +239,12 @@ const CharacterListView = ({ isDarkMode, currentUser }) => {
     if (currentUser === '訪客') return;
     const currentList = [...(characterData[member] || [])];
     const targetChar = currentList[index];
+    
+    // 確保物件結構完整
     let newCharObj = typeof targetChar === 'string' 
-      ? { name: targetChar, gear: '', tickets: 0, stamina: 0, custom: 0, note: '', class: null } 
+      ? { name: targetChar, gear: '', stamina: 0, extraStamina: 0, stamina100k: 0, craftStamina: 0, custom: 0, note: '', class: null } 
       : { ...targetChar };
+    
     newCharObj[field] = value;
     currentList[index] = newCharObj;
     try {
@@ -220,25 +259,58 @@ const CharacterListView = ({ isDarkMode, currentUser }) => {
     setClassSelector({ isOpen: false, member: null, index: null });
   };
 
+  // === 完場邏輯修改 ===
   const handleCompleteRun = async (member, index) => {
     if (currentUser === '訪客') return alert("訪客權限僅供瀏覽");
+    
     const currentList = [...(characterData[member] || [])];
     const targetChar = currentList[index];
     if (typeof targetChar === 'string') return;
+
     const runs = parseInt(targetChar.custom) || 0;
-    if (runs <= 0) return alert("請輸入有效的場次數量 (大於 0)");
-    const ticketCost = runs * 1;
-    const staminaCost = runs * 80;
-    const currentTickets = parseInt(targetChar.tickets) || 0;
-    const currentStamina = parseInt(targetChar.stamina) || 0;
-    const newTickets = currentTickets - ticketCost;
-    const newStamina = currentStamina - staminaCost;
-    const newCharObj = { ...targetChar, tickets: newTickets, stamina: newStamina, custom: '' };
+    if (runs <= 0) return alert("請輸入大於 0 的場次");
+
+    const totalCost = runs * STAMINA_PER_RUN;
+    let currentBase = parseInt(targetChar.stamina) || 0;
+    let currentExtra = parseInt(targetChar.extraStamina) || 0;
+
+    let remainingCost = totalCost;
+    
+    // 1. 先扣基礎體力
+    if (currentBase >= remainingCost) {
+        currentBase -= remainingCost;
+        remainingCost = 0;
+    } else {
+        remainingCost -= currentBase;
+        currentBase = 0;
+    }
+
+    // 2. 若還有剩餘消耗，扣額外體力
+    if (remainingCost > 0) {
+        if (currentExtra >= remainingCost) {
+            currentExtra -= remainingCost;
+            remainingCost = 0;
+        } else {
+            // 額外體力也不夠 (變成負數? 這裡先允許扣到0，剩下透支不計，或是你要允許變負數也可，這裡設定為到底)
+            // 根據需求通常是扣完為止，不會變負數，或者顯示警告。這裡設定扣到0為止。
+            currentExtra = 0;
+            // 如果需要完全精準，可以考慮 alert 體力不足
+        }
+    }
+
+    const newCharObj = { 
+        ...targetChar, 
+        stamina: currentBase, 
+        extraStamina: currentExtra, 
+        custom: '' // 清空場次輸入
+    };
+    
     currentList[index] = newCharObj;
+
     try {
       await setDoc(doc(db, "member_characters", "data"), { [member]: currentList }, { merge: true });
-      sendLog(currentUser, "完成場次", `${targetChar.name} 完成 ${runs} 場 (票-${ticketCost}, 體-${staminaCost})`);
-      alert(`已扣除 ${runs} 場消耗！\n剩餘票卷: ${newTickets}\n剩餘體力: ${newStamina}`);
+      sendLog(currentUser, "完成場次", `${targetChar.name} 完成 ${runs} 場 (總消耗 ${totalCost} 體)`);
+      alert(`已完成 ${runs} 場！\n剩餘基礎體力: ${currentBase}\n剩餘額外體力: ${currentExtra}`);
     } catch (e) { console.error("Complete run failed", e); alert("更新失敗"); }
   };
 
@@ -248,7 +320,18 @@ const CharacterListView = ({ isDarkMode, currentUser }) => {
     if (!nameToAdd) return;
     try {
       const currentList = [...(characterData[member] || [])];
-      const newCharObj = { name: nameToAdd, gear: '', tickets: 0, stamina: 0, custom: '', note: '', class: null };
+      // 初始化新角色的所有欄位
+      const newCharObj = { 
+          name: nameToAdd, 
+          gear: '', 
+          stamina: 0, 
+          extraStamina: 0, 
+          stamina100k: 0, 
+          craftStamina: 0,
+          custom: '', 
+          note: '', 
+          class: null 
+      };
       const newList = [...currentList, newCharObj];
       await setDoc(doc(db, "member_characters", "data"), { [member]: newList }, { merge: true });
       setNewCharInputs(prev => ({ ...prev, [member]: '' })); 
@@ -269,27 +352,18 @@ const CharacterListView = ({ isDarkMode, currentUser }) => {
     } catch (e) { console.error("刪除失敗", e); alert("刪除失敗"); }
   };
 
+  // Drag and Drop Logic (保持不變)
   const handleDragStart = (e, member, index) => {
-    if (currentUser === '訪客' || !allowDrag) {
-        e.preventDefault(); 
-        return; 
-    }
+    if (currentUser === '訪客' || !allowDrag) { e.preventDefault(); return; }
     setDragItem({ member, index });
     e.dataTransfer.effectAllowed = "move";
   };
-
   const handleDragEnter = (e, member, index) => {
-    if (dragItem && dragItem.member === member) {
-        setDragOverItem({ member, index });
-    }
+    if (dragItem && dragItem.member === member) { setDragOverItem({ member, index }); }
   };
-
   const handleDragEnd = async () => {
     if (!dragItem || !dragOverItem) {
-        setDragItem(null);
-        setDragOverItem(null);
-        setAllowDrag(false);
-        return;
+        setDragItem(null); setDragOverItem(null); setAllowDrag(false); return;
     }
     if (dragItem.member === dragOverItem.member) {
         const member = dragItem.member;
@@ -302,9 +376,7 @@ const CharacterListView = ({ isDarkMode, currentUser }) => {
             await setDoc(doc(db, "member_characters", "data"), { [member]: list }, { merge: true });
         } catch (e) { console.error("Sort update failed", e); alert("排序儲存失敗"); }
     }
-    setDragItem(null);
-    setDragOverItem(null);
-    setAllowDrag(false);
+    setDragItem(null); setDragOverItem(null); setAllowDrag(false);
   };
 
   return (
@@ -324,7 +396,7 @@ const CharacterListView = ({ isDarkMode, currentUser }) => {
             角色列表
           </h2>
           <p className="text-sm opacity-60" style={{ color: 'var(--app-text)' }}>
-            管理角色資訊、體力與票卷。每日定時自動補給。
+            管理體力、額外體力與製作體力。自動回復與每週重置已啟用。
           </p>
         </div>
         <div className="flex gap-2">
@@ -394,7 +466,7 @@ const CharacterListView = ({ isDarkMode, currentUser }) => {
                 {chars.length > 0 ? (
                   chars.map((charData, idx) => {
                     const char = typeof charData === 'string' 
-                      ? { name: charData, gear: '', tickets: 0, stamina: 0, custom: '', note: '', class: null } 
+                      ? { name: charData, gear: '', stamina: 0, extraStamina: 0, stamina100k: 0, craftStamina: 0, custom: '', note: '', class: null } 
                       : charData;
 
                     const isDragging = dragItem && dragItem.member === member && dragItem.index === idx;
@@ -441,7 +513,7 @@ const CharacterListView = ({ isDarkMode, currentUser }) => {
                              {currentClass ? (
                                  <img src={CLASS_ICON_BASE_PATH + currentClass.img} alt={currentClass.label} className="w-full h-full object-cover"/>
                              ) : (
-                                 <span className="text-[10px] opacity-60">點擊選擇職業</span>
+                                 <span className="text-[10px] opacity-60">設定職業</span>
                              )}
                           </button>
 
@@ -449,7 +521,6 @@ const CharacterListView = ({ isDarkMode, currentUser }) => {
                             {char.name}
                           </span>
                           
-                          {/* 改用 EditableField */}
                           <EditableField 
                             type="text" 
                             className="w-14 text-center text-sm p-1 rounded bg-black/10 border border-white/10 outline-none focus:border-blue-500"
@@ -478,47 +549,47 @@ const CharacterListView = ({ isDarkMode, currentUser }) => {
                           )}
                         </div>
 
-                        {/* === Row 2: Ticket | Stamina | Runs === */}
+                        {/* === Row 2: 基礎體力 | 額外體力 | 完場操作 === */}
                         <div className="flex items-center gap-2">
+                          {/* 基礎體力 (原票卷位置) */}
                           <div className="flex items-center gap-1 flex-1 bg-black/10 rounded px-2 py-1 border border-white/5">
-                            <Ticket size={12} className="text-yellow-500 flex-shrink-0"/>
-                            {/* 改用 EditableField */}
+                            <Zap size={14} className="text-blue-500 flex-shrink-0" title="基礎體力 (上限840)"/>
                             <EditableField 
                               type="number" 
                               className="w-full bg-transparent outline-none text-sm text-center font-mono"
-                              placeholder="票"
+                              placeholder="基礎"
                               style={{ color: 'var(--card-text)' }}
-                              value={char.tickets}
-                              onSave={(val) => updateCharacterField(member, idx, 'tickets', val)}
+                              value={char.stamina} // 基礎體力
+                              onSave={(val) => updateCharacterField(member, idx, 'stamina', Math.min(BASE_STAMINA_CAP, parseInt(val)||0))}
                             />
                           </div>
 
+                          {/* 額外體力 (原體力位置) */}
                           <div className="flex items-center gap-1 flex-1 bg-black/10 rounded px-2 py-1 border border-white/5">
-                            <Zap size={12} className="text-blue-400 flex-shrink-0"/>
-                            {/* 改用 EditableField */}
+                            <BatteryCharging size={14} className="text-yellow-500 flex-shrink-0" title="額外體力 (上限2000)"/>
                             <EditableField 
                               type="number" 
                               className="w-full bg-transparent outline-none text-sm text-center font-mono"
-                              placeholder="體力"
+                              placeholder="額外"
                               style={{ color: 'var(--card-text)' }}
-                              value={char.stamina}
-                              onSave={(val) => updateCharacterField(member, idx, 'stamina', val)}
+                              value={char.extraStamina} // 額外體力
+                              onSave={(val) => updateCharacterField(member, idx, 'extraStamina', Math.min(EXTRA_STAMINA_CAP, parseInt(val)||0))}
                             />
                           </div>
 
+                          {/* 完場按鈕 */}
                           <div className="flex items-center gap-1">
-                            {/* 改用 EditableField */}
                             <EditableField 
                               type="number" 
                               className="w-8 text-center text-sm p-1 rounded bg-black/10 border border-white/10 outline-none"
-                              placeholder="" 
+                              placeholder="場" 
                               style={{ color: 'var(--card-text)' }}
                               value={char.custom}
                               onSave={(val) => updateCharacterField(member, idx, 'custom', val)}
                             />
                             <button 
                               className="bg-purple-600 hover:bg-purple-500 text-white text-[10px] px-2 py-1.5 rounded flex items-center gap-1 whitespace-nowrap shadow"
-                              title={`扣除: ${char.custom||0}票 / ${(char.custom||0)*80}體`}
+                              title={`完場：扣除 ${(char.custom||0)*STAMINA_PER_RUN} 體力 (優先扣基礎)`}
                               onClick={() => handleCompleteRun(member, idx)}
                               onMouseDown={(e) => e.stopPropagation()}
                             >
@@ -527,9 +598,39 @@ const CharacterListView = ({ isDarkMode, currentUser }) => {
                           </div>
                         </div>
 
-                        {/* === Row 3: Note === */}
+                        {/* === Row 3: 10萬體 | 製作體 === */}
+                        <div className="flex items-center gap-2">
+                           {/* 10萬體 */}
+                           <div className="flex items-center gap-1 flex-1 bg-black/10 rounded px-2 py-1 border border-white/5" title="每週三 05:00 重置">
+                             <Package size={14} className="text-orange-400 flex-shrink-0"/>
+                             <span className="text-[10px] opacity-60">10萬</span>
+                             <EditableField 
+                               type="number" 
+                               className="w-full bg-transparent outline-none text-sm text-center font-mono"
+                               placeholder="0"
+                               style={{ color: 'var(--card-text)' }}
+                               value={char.stamina100k}
+                               onSave={(val) => updateCharacterField(member, idx, 'stamina100k', val)}
+                             />
+                           </div>
+
+                           {/* 製作體 */}
+                           <div className="flex items-center gap-1 flex-1 bg-black/10 rounded px-2 py-1 border border-white/5" title="每週一 00:00 重置">
+                             <Hammer size={14} className="text-gray-400 flex-shrink-0"/>
+                             <span className="text-[10px] opacity-60">製作</span>
+                             <EditableField 
+                               type="number" 
+                               className="w-full bg-transparent outline-none text-sm text-center font-mono"
+                               placeholder="0"
+                               style={{ color: 'var(--card-text)' }}
+                               value={char.craftStamina}
+                               onSave={(val) => updateCharacterField(member, idx, 'craftStamina', val)}
+                             />
+                           </div>
+                        </div>
+
+                        {/* === Row 4: Note === */}
                         <div>
-                          {/* 改用 EditableField */}
                           <EditableField 
                             type="text" 
                             className="w-full text-xs p-1 bg-transparent border-b border-white/10 outline-none focus:border-white/30 placeholder-white/20"
