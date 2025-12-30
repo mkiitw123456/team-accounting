@@ -281,13 +281,14 @@ const AccountingView = ({ isDarkMode, dbReady, currentUser }) => {
         </div>
       )}
 
-      <BalanceGrid 
-        isOpen={isBalanceGridOpen} 
-        onClose={() => setIsBalanceGridOpen(false)} 
-        theme={theme}
-        isDarkMode={isDarkMode}
-        currentUser={currentUser}
-      />
+<BalanceGrid 
+  isOpen={isBalanceGridOpen} 
+  onClose={() => setIsBalanceGridOpen(false)} 
+  theme={theme}
+  isDarkMode={isDarkMode}
+  currentUser={currentUser}
+  activeItems={items} // <=== 新增這行：將進行中的項目傳進去計算
+/>
       
       <CostCalculatorModal 
         isOpen={isCostCalcOpen}
