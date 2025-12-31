@@ -139,8 +139,9 @@ const CharacterListView = ({ isDarkMode, currentUser }) => {
           if (now - checkPointer > ONE_DAY) checkPointer = now - ONE_DAY;
 
           let staminaGainMultiplier = 0; // 紀錄要加幾次體力
-          let shouldResetCraft = false; // 是否重置製作體 (週一 00:00)
-          let shouldReset100k = false;  // 是否重置10萬體 (週三 05:00)
+          
+          let shouldReset100k = false;  // 10萬體 (修正為: 週一 00:00)
+          let shouldResetCraft = false; // 製作體 (修正為: 週三 05:00)
 
           let pointerDate = new Date(checkPointer);
           // 將指針設為該小時的開始，方便計算跨越
@@ -157,11 +158,11 @@ const CharacterListView = ({ isDarkMode, currentUser }) => {
                 // 1. 體力回復
                 if (STAMINA_HOURS.includes(h)) staminaGainMultiplier += 1;
 
-                // 2. 製作體重置 (週一 00:00)
-                if (day === 1 && h === 0) shouldResetCraft = true;
+                // 2. 10萬體重置 (修正: 週一 00:00)
+                if (day === 1 && h === 0) shouldReset100k = true;
 
-                // 3. 10萬體重置 (週三 05:00)
-                if (day === 3 && h === 5) shouldReset100k = true;
+                // 3. 製作體重置 (修正: 週三 05:00)
+                if (day === 3 && h === 5) shouldResetCraft = true;
              }
           }
 
@@ -184,11 +185,11 @@ const CharacterListView = ({ isDarkMode, currentUser }) => {
                      newStamina = Math.min(BASE_STAMINA_CAP, newStamina + (staminaGainMultiplier * 15));
                  }
 
-                 let newCraftStamina = parseInt(c.craftStamina) || 0;
-                 if (shouldResetCraft) newCraftStamina = 0;
-
                  let newStamina100k = parseInt(c.stamina100k) || 0;
-                 if (shouldReset100k) newStamina100k = 0;
+                 if (shouldReset100k) newStamina100k = 0; // 修正重置
+
+                 let newCraftStamina = parseInt(c.craftStamina) || 0;
+                 if (shouldResetCraft) newCraftStamina = 0; // 修正重置
 
                  return {
                    ...c,
@@ -208,8 +209,8 @@ const CharacterListView = ({ isDarkMode, currentUser }) => {
              
              let logMsg = [];
              if (staminaGainMultiplier > 0) logMsg.push(`體力+${staminaGainMultiplier * 15}`);
-             if (shouldResetCraft) logMsg.push(`製作體重置`);
-             if (shouldReset100k) logMsg.push(`10萬體重置`);
+             if (shouldReset100k) logMsg.push(`10萬體重置(週一)`);
+             if (shouldResetCraft) logMsg.push(`製作體重置(週三)`);
              console.log(`[System] 全體更新: ${logMsg.join(', ')}`);
           }
         });
@@ -284,8 +285,6 @@ const CharacterListView = ({ isDarkMode, currentUser }) => {
         const currentExtra = parseInt(newCharObj.extraStamina) || 0;
         const staminaToAdd = delta * 40;
         let finalExtra = currentExtra + staminaToAdd;
-        // 確保不低於 0 (視需求而定，但通常體力不會變負)
-        // if (finalExtra < 0) finalExtra = 0; 
         
         // 遵守最大體力上限 2000
         newCharObj.extraStamina = Math.min(EXTRA_STAMINA_CAP, finalExtra);
@@ -650,25 +649,11 @@ const CharacterListView = ({ isDarkMode, currentUser }) => {
                           </div>
                         </div>
 
-                        {/* === Row 3: 10萬體 | 製作體 === */}
+                        {/* === Row 3: 10萬體 | 製作體 (位置已互換) === */}
                         <div className="flex items-center gap-2">
-                           {/* 10萬體 (使用新的 handleResourceUpdate) */}
+                           
+                           {/* 左邊：現在是「製作體」 (Reset: Wed 05:00) */}
                            <div className="flex items-center gap-1 flex-1 bg-black/10 rounded px-2 py-1 border border-white/5" title="每週三 05:00 重置">
-                             <Package size={14} className="text-orange-400 flex-shrink-0"/>
-                             <span className="text-[10px] opacity-60">10萬</span>
-                             <EditableField 
-                               type="number" 
-                               className="w-full bg-transparent outline-none text-sm text-center font-mono"
-                               placeholder="0"
-                               style={{ color: 'var(--card-text)' }}
-                               value={char.stamina100k}
-                               // 使用新邏輯處理 10萬體
-                               onSave={(val) => handleResourceUpdate(member, idx, 'stamina100k', val)}
-                             />
-                           </div>
-
-                           {/* 製作體 (使用新的 handleResourceUpdate) */}
-                           <div className="flex items-center gap-1 flex-1 bg-black/10 rounded px-2 py-1 border border-white/5" title="每週一 00:00 重置">
                              <Hammer size={14} className="text-gray-400 flex-shrink-0"/>
                              <span className="text-[10px] opacity-60">製作</span>
                              <EditableField 
@@ -679,6 +664,21 @@ const CharacterListView = ({ isDarkMode, currentUser }) => {
                                value={char.craftStamina}
                                // 使用新邏輯處理 製作體
                                onSave={(val) => handleResourceUpdate(member, idx, 'craftStamina', val)}
+                             />
+                           </div>
+
+                           {/* 右邊：現在是「10萬體」 (Reset: Mon 00:00) */}
+                           <div className="flex items-center gap-1 flex-1 bg-black/10 rounded px-2 py-1 border border-white/5" title="每週一 00:00 重置">
+                             <Package size={14} className="text-orange-400 flex-shrink-0"/>
+                             <span className="text-[10px] opacity-60">10萬</span>
+                             <EditableField 
+                               type="number" 
+                               className="w-full bg-transparent outline-none text-sm text-center font-mono"
+                               placeholder="0"
+                               style={{ color: 'var(--card-text)' }}
+                               value={char.stamina100k}
+                               // 使用新邏輯處理 10萬體
+                               onSave={(val) => handleResourceUpdate(member, idx, 'stamina100k', val)}
                              />
                            </div>
                         </div>

@@ -5,6 +5,23 @@ import { Trash2, CheckCircle, X } from 'lucide-react';
 import { EXCHANGE_TYPES, BASE_LISTING_FEE_PERCENT } from '../utils/constants';
 import { formatDate, calculateFinance, sendLog } from '../utils/helpers';
 
+// 數字格式化工具
+const formatNumber = (num) => {
+  if (num === null || num === undefined || num === '') return '';
+  const str = num.toString().replace(/,/g, '');
+  if (isNaN(str)) return str;
+  // 支援小數點
+  const parts = str.split('.');
+  parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return parts.join('.');
+};
+
+// 移除逗號
+const parseNumber = (str) => {
+  if (!str) return 0;
+  return parseFloat(str.replace(/,/g, '')) || 0;
+};
+
 const ItemCard = ({ 
   item, isHistory, theme, 
   updateItemValue, handleSettleAll, handleDelete,
@@ -20,22 +37,18 @@ const ItemCard = ({
     item.price, item.exchangeType, item.participants?.length || 0, item.cost, listingHistory
   );
 
-  // === 修改重點 1: 當價格輸入框獲得焦點時，記錄當前數值 ===
   const handlePriceFocus = () => {
     setPriceOnFocus(item.price);
   };
 
-  // === 修改重點 2: 當價格輸入框失去焦點時，若價格有變動，自動新增刊登費紀錄 ===
   const handlePriceBlur = (e) => {
-    // 取得當前輸入框的最終數值
-    const currentPrice = parseFloat(e.target.value);
+    // 取得當前輸入框的數值 (移除逗號後)
+    const currentPrice = parseNumber(e.target.value);
     const previousPrice = parseFloat(priceOnFocus);
 
-    // 只有在「數值有效」且「數值確實有改變」時才新增歷史紀錄
     if (!isNaN(currentPrice) && currentPrice !== previousPrice) {
       const newHistory = [...listingHistory, currentPrice];
       updateItemValue(item.id, 'listingHistory', newHistory);
-      // 不需要額外呼叫 updateItemValue 更新 price，因為 onChange 已經處理了
       console.log(`價格變更: ${previousPrice} -> ${currentPrice}，已自動新增刊登費。`);
     }
   };
@@ -91,53 +104,54 @@ const ItemCard = ({
         <div className="flex flex-col">
           <span className={`text-xs opacity-70`}>售價 (含稅)</span>
           <div className="text-lg font-bold">
-            {/* === 修改重點 3: 解鎖輸入框，加入 onFocus 與 onBlur === */}
+            {/* === 修改：支援逗號顯示的即時輸入框 === */}
             {!isHistory ? (
                <input 
-                 type="number" 
-                 // 移除 cursor-not-allowed 與 opacity-80，加入 focus 樣式
+                 type="text" 
                  className="bg-transparent w-full border-b border-gray-400/30 outline-none focus:border-blue-500 transition-colors" 
-                 value={item.price} 
-                 // 保持 onChange 以便即時輸入 (這會觸發 Firestore 更新，但不影響 local 變數)
-                 onChange={e => updateItemValue(item.id, 'price', e.target.value)}
-                 // 加入 Focus 紀錄舊數值
+                 // 顯示時：加上逗號
+                 value={formatNumber(item.price)} 
+                 // 輸入時：移除逗號再存入 DB
+                 onChange={e => updateItemValue(item.id, 'price', parseNumber(e.target.value))}
                  onFocus={handlePriceFocus}
-                 // 加入 Blur 比對並新增歷史紀錄
                  onBlur={handlePriceBlur}
                  title="直接修改價格，系統會自動新增一筆刊登費紀錄"
                />
-            ) : item.price}
+            ) : item.price.toLocaleString()} 
           </div>
           <div className="text-[10px] opacity-60 mt-1">
-             稅: {(item.price * (EXCHANGE_TYPES[item.exchangeType]?.tax || 0)).toFixed(0)}
+             稅: {(item.price * (EXCHANGE_TYPES[item.exchangeType]?.tax || 0)).toLocaleString()}
           </div>
         </div>
         
         <div className="flex flex-col">
           <span className={`text-xs opacity-70 flex items-center gap-1`}>
              刊登費 (2%) 
-             {/* === 修改重點 4: 移除了原本這裡的 + 號按鈕 === */}
           </span>
           <div className="flex flex-col gap-1 mt-1 max-h-20 overflow-y-auto">
              {listingHistory.map((price, idx) => (
                  <div key={idx} className="flex items-center justify-between text-xs bg-black/10 p-1 rounded">
-                    <span>${price} <span className="opacity-60">&rarr; {Math.floor(price * BASE_LISTING_FEE_PERCENT)}</span></span>
-                    {/* 保留 X 按鈕以供誤觸時刪除 */}
+                    <span>${price.toLocaleString()} <span className="opacity-60">&rarr; {Math.floor(price * BASE_LISTING_FEE_PERCENT).toLocaleString()}</span></span>
                     {!isHistory && <button onClick={() => removeListingPrice(idx)} className="text-red-400 hover:text-red-600"><X size={10}/></button>}
                  </div>
              ))}
              {listingHistory.length === 0 && <span className="opacity-40 text-xs">- 無紀錄 -</span>}
           </div>
-          <div className="text-[10px] text-blue-500 mt-1 font-bold">總計: {totalListingFee}</div>
+          <div className="text-[10px] text-blue-500 mt-1 font-bold">總計: {totalListingFee.toLocaleString()}</div>
         </div>
 
         <div className="flex flex-col">
           <span className={`text-xs opacity-70`}>額外成本 (手動)</span>
           <div className="flex items-center gap-2">
             {!isHistory ? (
-               <input type="number" className={`w-full text-right rounded border bg-transparent border-gray-400 text-sm p-1`} value={item.cost || 0} onChange={e => updateItemValue(item.id, 'cost', e.target.value)}/>
+               <input 
+                 type="text" // 改成 text 支援逗號
+                 className={`w-full text-right rounded border bg-transparent border-gray-400 text-sm p-1`} 
+                 value={formatNumber(item.cost || 0)} 
+                 onChange={e => updateItemValue(item.id, 'cost', parseNumber(e.target.value))}
+               />
             ) : (
-              <span className="text-red-400 font-mono">-{item.cost || 0}</span>
+              <span className="text-red-400 font-mono">-{item.cost.toLocaleString()}</span>
             )}
           </div>
           <div className="text-xs text-green-500 mt-2 font-bold border-t pt-1 border-gray-300">
@@ -159,7 +173,7 @@ const ItemCard = ({
         <div className="mt-4 flex justify-end">
           {confirmSettleId === item.id ? (
             <div className="flex gap-2 items-center flex-wrap justify-end">
-              <span className="text-sm text-red-500">將 <b>${perPersonSplit}</b>/人 加入餘額表?</span>
+              <span className="text-sm text-red-500">將 <b>${perPersonSplit.toLocaleString()}</b>/人 加入餘額表?</span>
               <button onClick={() => handleSettleAll(item, perPersonSplit)} className="bg-red-500 text-white px-3 py-1 rounded text-sm">確認</button>
               <button onClick={() => setConfirmSettleId(null)} className="bg-gray-200 text-gray-700 px-3 py-1 rounded text-sm">取消</button>
             </div>

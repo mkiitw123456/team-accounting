@@ -14,6 +14,21 @@ import ItemCard from '../components/ItemCard';
 import BalanceGrid from '../components/BalanceGrid';
 import CostCalculatorModal from '../components/CostCalculatorModal';
 
+// === 輔助函式：數字格式化 ===
+const formatNumber = (num) => {
+  if (num === null || num === undefined || num === '') return '';
+  const str = num.toString().replace(/,/g, '');
+  if (isNaN(str)) return str;
+  const parts = str.split('.');
+  parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return parts.join('.');
+};
+
+const parseNumber = (str) => {
+  if (!str) return 0;
+  return parseFloat(str.replace(/,/g, '')) || 0;
+};
+
 const AccountingView = ({ isDarkMode, dbReady, currentUser }) => {
   const [items, setItems] = useState([]);
   const [historyItems, setHistoryItems] = useState([]);
@@ -27,7 +42,7 @@ const AccountingView = ({ isDarkMode, dbReady, currentUser }) => {
   
   const [historyFilter, setHistoryFilter] = useState({ name: '', date: '', dateType: 'created' });
   
-  // 預設 exchangeType 為 'WORLD' (先前修改)
+  // 這裡的 price 和 cost 我們在顯示時格式化，但在提交前會移除逗號
   const [formData, setFormData] = useState({
     seller: currentUser || MEMBERS[0], itemName: '', price: '', cost: 0, exchangeType: 'WORLD', participants: [...MEMBERS] 
   });
@@ -60,21 +75,23 @@ const AccountingView = ({ isDarkMode, dbReady, currentUser }) => {
     
     const finalParticipants = [...new Set([...formData.participants, formData.seller])];
     
-    // 確保價格是數字
-    const initialPrice = parseFloat(formData.price) || 0;
+    // 確保價格是數字 (移除逗號)
+    const initialPrice = parseNumber(formData.price);
+    const initialCost = parseNumber(formData.cost);
 
     const newItem = {
       ...formData,
-      cost: parseFloat(formData.cost) || 0,
+      price: initialPrice,
+      cost: initialCost,
       // === 修改重點：建立時直接將當前售價加入歷史紀錄，自動產生第一筆刊登費 ===
       listingHistory: [initialPrice], 
       participants: finalParticipants.map(p => ({ name: p })),
       isSold: false, createdAt: new Date().toISOString(), settledAt: null 
     };
     await addDoc(collection(db, "active_items"), newItem);
-    sendLog(currentUser, "新增記帳項目", `${newItem.itemName} ($${newItem.price})`);
+    sendLog(currentUser, "新增記帳項目", `${newItem.itemName} ($${initialPrice})`);
     
-    // 重置表單 (保持 exchangeType 為 'WORLD')
+    // 重置表單
     setFormData({ seller: currentUser || MEMBERS[0], itemName: '', price: '', cost: 0, exchangeType: 'WORLD', participants: [...MEMBERS] });
     setIsModalOpen(false); setShowHistory(false);
   };
@@ -263,10 +280,32 @@ const AccountingView = ({ isDarkMode, dbReady, currentUser }) => {
             <h3 className="text-xl font-bold mb-4">建立新記帳項目</h3>
             <div className="grid grid-cols-2 gap-4 mb-4">
               <div><label className="block text-xs mb-1 opacity-70">販賣人</label><select className={`w-full p-2 rounded border ${theme.input} bg-gray-100 cursor-not-allowed`} value={formData.seller} disabled>{MEMBERS.map(m=><option key={m} value={m}>{m}</option>)}</select></div>
-              <div><label className="block text-xs mb-1 opacity-70">價格</label><input type="number" className={`w-full p-2 rounded border ${theme.input}`} value={formData.price} onChange={e=>setFormData({...formData, price: e.target.value})}/></div>
+              
+              {/* === 修改：售價支援逗號 === */}
+              <div>
+                <label className="block text-xs mb-1 opacity-70">價格</label>
+                <input 
+                  type="text" 
+                  className={`w-full p-2 rounded border ${theme.input}`} 
+                  value={formatNumber(formData.price)} 
+                  onChange={e => setFormData({...formData, price: parseNumber(e.target.value)})}
+                  placeholder="0"
+                />
+              </div>
+
               <div><label className="block text-xs mb-1 opacity-70">物品名稱</label><input type="text" className={`w-full p-2 rounded border ${theme.input}`} value={formData.itemName} onChange={e=>setFormData({...formData, itemName: e.target.value})}/></div>
-              {/* 改成總成本輸入框 */}
-              <div><label className="block text-xs mb-1 opacity-70">額外成本 (手動)</label><input type="number" className={`w-full p-2 rounded border ${theme.input}`} value={formData.cost} onChange={e=>setFormData({...formData, cost: e.target.value})}/></div>
+              
+              {/* === 修改：成本支援逗號 === */}
+              <div>
+                <label className="block text-xs mb-1 opacity-70">額外成本 (手動)</label>
+                <input 
+                  type="text" 
+                  className={`w-full p-2 rounded border ${theme.input}`} 
+                  value={formatNumber(formData.cost)} 
+                  onChange={e => setFormData({...formData, cost: parseNumber(e.target.value)})}
+                  placeholder="0"
+                />
+              </div>
             </div>
             <div className="mb-4 flex gap-2">{Object.keys(EXCHANGE_TYPES).map(k=><button key={k} onClick={()=>setFormData({...formData, exchangeType: k})} className={`flex-1 py-1 rounded border ${formData.exchangeType===k ? 'bg-blue-50 border-blue-500 text-blue-700' : 'border-gray-200 opacity-60'}`}>{EXCHANGE_TYPES[k].label}</button>)}</div>
             <div className="mb-4 pt-4 border-t border-gray-200">
@@ -281,14 +320,14 @@ const AccountingView = ({ isDarkMode, dbReady, currentUser }) => {
         </div>
       )}
 
-<BalanceGrid 
-  isOpen={isBalanceGridOpen} 
-  onClose={() => setIsBalanceGridOpen(false)} 
-  theme={theme}
-  isDarkMode={isDarkMode}
-  currentUser={currentUser}
-  activeItems={items} // <=== 新增這行：將進行中的項目傳進去計算
-/>
+      <BalanceGrid 
+        isOpen={isBalanceGridOpen} 
+        onClose={() => setIsBalanceGridOpen(false)} 
+        theme={theme}
+        isDarkMode={isDarkMode}
+        currentUser={currentUser}
+        activeItems={items}
+      />
       
       <CostCalculatorModal 
         isOpen={isCostCalcOpen}
