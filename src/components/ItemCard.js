@@ -1,6 +1,5 @@
 // src/components/ItemCard.js
-import React, { useState } from 'react';
-// 移除 Plus icon，因為不再需要手動按 + 號
+import React, { useState, useEffect, useRef } from 'react';
 import { Trash2, CheckCircle, X } from 'lucide-react';
 import { EXCHANGE_TYPES, BASE_LISTING_FEE_PERCENT } from '../utils/constants';
 import { formatDate, calculateFinance, sendLog } from '../utils/helpers';
@@ -10,16 +9,63 @@ const formatNumber = (num) => {
   if (num === null || num === undefined || num === '') return '';
   const str = num.toString().replace(/,/g, '');
   if (isNaN(str)) return str;
-  // 支援小數點
   const parts = str.split('.');
   parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
   return parts.join('.');
 };
 
-// 移除逗號
-const parseNumber = (str) => {
-  if (!str) return 0;
-  return parseFloat(str.replace(/,/g, '')) || 0;
+const parseNumber = (val) => {
+  if (val === null || val === undefined || val === '') return 0;
+  if (typeof val === 'number') return val;
+  return parseFloat(val.toString().replace(/,/g, '')) || 0;
+};
+
+// === MoneyInput 元件 (與 AccountingView 相同邏輯) ===
+const MoneyInput = ({ value, onChange, onBlur, onFocus, className, ...props }) => {
+  const [displayValue, setDisplayValue] = useState('');
+  const isComposing = useRef(false);
+
+  useEffect(() => {
+    if (!isComposing.current) {
+      setDisplayValue(formatNumber(value));
+    }
+  }, [value]);
+
+  const handleChange = (e) => {
+    const raw = e.target.value;
+    setDisplayValue(raw);
+    if (!isComposing.current) {
+       onChange(parseNumber(raw), e);
+    }
+  };
+
+  const handleCompositionStart = () => { isComposing.current = true; };
+  const handleCompositionEnd = (e) => {
+    isComposing.current = false;
+    const finalVal = parseNumber(e.target.value);
+    onChange(finalVal, e);
+    setDisplayValue(formatNumber(finalVal));
+  };
+
+  const handleFocus = (e) => {
+    e.target.select();
+    if (onFocus) onFocus(e);
+  }
+
+  return (
+    <input
+      type="text"
+      className={className}
+      value={displayValue}
+      onChange={handleChange}
+      onCompositionStart={handleCompositionStart}
+      onCompositionEnd={handleCompositionEnd}
+      onFocus={handleFocus}
+      onBlur={onBlur}
+      inputMode="decimal"
+      {...props}
+    />
+  );
 };
 
 const ItemCard = ({ 
@@ -30,11 +76,14 @@ const ItemCard = ({
 }) => {
   const listingHistory = item.listingHistory || [];
   
-  // 用來記錄 Focus 時的價格，以便在 Blur 時比對是否有變更
+  // 記錄 Focus 時的價格
   const [priceOnFocus, setPriceOnFocus] = useState(item.price);
 
+  const safePrice = parseFloat(item.price) || 0;
+  const safeCost = parseFloat(item.cost) || 0;
+
   const { perPersonSplit, totalListingFee } = calculateFinance(
-    item.price, item.exchangeType, item.participants?.length || 0, item.cost, listingHistory
+    safePrice, item.exchangeType, item.participants?.length || 0, safeCost, listingHistory
   );
 
   const handlePriceFocus = () => {
@@ -42,7 +91,7 @@ const ItemCard = ({
   };
 
   const handlePriceBlur = (e) => {
-    // 取得當前輸入框的數值 (移除逗號後)
+    // 取得當前數值
     const currentPrice = parseNumber(e.target.value);
     const previousPrice = parseFloat(priceOnFocus);
 
@@ -66,10 +115,10 @@ const ItemCard = ({
       <div className="flex justify-between items-start mb-4">
         <div className="flex flex-col gap-1 w-full pr-10">
           <div className="flex flex-wrap items-center gap-3">
-            <span className="bg-blue-100 text-blue-800 font-bold px-2 py-1 rounded text-xs">{item.seller}</span>
-            <h3 className="text-xl font-bold">{item.itemName}</h3>
+            <span className="bg-blue-100 text-blue-800 font-bold px-2 py-1 rounded text-xs">{item.seller || '未知'}</span>
+            <h3 className="text-xl font-bold">{item.itemName || '無名稱'}</h3>
             <span className="px-2 py-0.5 text-xs rounded-full border bg-green-100 text-green-700 border-green-200">
-              {EXCHANGE_TYPES[item.exchangeType]?.label || '未知'}
+              {EXCHANGE_TYPES[item.exchangeType]?.label || '一般'}
             </span>
           </div>
           {isHistory && <div className="text-xs text-gray-400 flex gap-2"><span>建: {formatDate(item.createdAt)}</span><span>結: {formatDate(item.settledAt)}</span></div>}
@@ -104,23 +153,20 @@ const ItemCard = ({
         <div className="flex flex-col">
           <span className={`text-xs opacity-70`}>售價 (含稅)</span>
           <div className="text-lg font-bold">
-            {/* === 修改：支援逗號顯示的即時輸入框 === */}
             {!isHistory ? (
-               <input 
-                 type="text" 
+               // 使用 MoneyInput 取代原始 input
+               <MoneyInput 
                  className="bg-transparent w-full border-b border-gray-400/30 outline-none focus:border-blue-500 transition-colors" 
-                 // 顯示時：加上逗號
-                 value={formatNumber(item.price)} 
-                 // 輸入時：移除逗號再存入 DB
-                 onChange={e => updateItemValue(item.id, 'price', parseNumber(e.target.value))}
+                 value={item.price} 
+                 onChange={(val) => updateItemValue(item.id, 'price', val)}
                  onFocus={handlePriceFocus}
                  onBlur={handlePriceBlur}
                  title="直接修改價格，系統會自動新增一筆刊登費紀錄"
                />
-            ) : item.price.toLocaleString()} 
+            ) : safePrice.toLocaleString()} 
           </div>
           <div className="text-[10px] opacity-60 mt-1">
-             稅: {(item.price * (EXCHANGE_TYPES[item.exchangeType]?.tax || 0)).toLocaleString()}
+             稅: {(safePrice * (EXCHANGE_TYPES[item.exchangeType]?.tax || 0)).toLocaleString()}
           </div>
         </div>
         
@@ -131,7 +177,7 @@ const ItemCard = ({
           <div className="flex flex-col gap-1 mt-1 max-h-20 overflow-y-auto">
              {listingHistory.map((price, idx) => (
                  <div key={idx} className="flex items-center justify-between text-xs bg-black/10 p-1 rounded">
-                    <span>${price.toLocaleString()} <span className="opacity-60">&rarr; {Math.floor(price * BASE_LISTING_FEE_PERCENT).toLocaleString()}</span></span>
+                    <span>${(price || 0).toLocaleString()} <span className="opacity-60">&rarr; {Math.floor((price || 0) * BASE_LISTING_FEE_PERCENT).toLocaleString()}</span></span>
                     {!isHistory && <button onClick={() => removeListingPrice(idx)} className="text-red-400 hover:text-red-600"><X size={10}/></button>}
                  </div>
              ))}
@@ -144,14 +190,14 @@ const ItemCard = ({
           <span className={`text-xs opacity-70`}>額外成本 (手動)</span>
           <div className="flex items-center gap-2">
             {!isHistory ? (
-               <input 
-                 type="text" // 改成 text 支援逗號
+               // 使用 MoneyInput 取代原始 input
+               <MoneyInput 
                  className={`w-full text-right rounded border bg-transparent border-gray-400 text-sm p-1`} 
-                 value={formatNumber(item.cost || 0)} 
-                 onChange={e => updateItemValue(item.id, 'cost', parseNumber(e.target.value))}
+                 value={item.cost} 
+                 onChange={(val) => updateItemValue(item.id, 'cost', val)}
                />
             ) : (
-              <span className="text-red-400 font-mono">-{item.cost.toLocaleString()}</span>
+              <span className="text-red-400 font-mono">-{safeCost.toLocaleString()}</span>
             )}
           </div>
           <div className="text-xs text-green-500 mt-2 font-bold border-t pt-1 border-gray-300">
@@ -164,7 +210,7 @@ const ItemCard = ({
         {item.participants?.map((p, idx) => (
           <div key={idx} 
                className={`px-2 py-1 rounded border text-xs flex items-center select-none bg-black/10 opacity-80`}>
-            {p.name}
+            {p.name || p} 
           </div>
         ))}
       </div>

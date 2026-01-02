@@ -1,5 +1,5 @@
 // src/views/AccountingView.js
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   Plus, History, Grid, X, Calculator 
 } from 'lucide-react';
@@ -14,7 +14,7 @@ import ItemCard from '../components/ItemCard';
 import BalanceGrid from '../components/BalanceGrid';
 import CostCalculatorModal from '../components/CostCalculatorModal';
 
-// === 輔助函式：數字格式化 ===
+// === 輔助函式 ===
 const formatNumber = (num) => {
   if (num === null || num === undefined || num === '') return '';
   const str = num.toString().replace(/,/g, '');
@@ -24,9 +24,63 @@ const formatNumber = (num) => {
   return parts.join('.');
 };
 
-const parseNumber = (str) => {
-  if (!str) return 0;
-  return parseFloat(str.replace(/,/g, '')) || 0;
+const parseNumber = (val) => {
+  if (val === null || val === undefined || val === '') return 0;
+  if (typeof val === 'number') return val;
+  return parseFloat(val.toString().replace(/,/g, '')) || 0;
+};
+
+// === 新增：強健的金額輸入框元件 (解決中文輸入法與0的問題) ===
+const MoneyInput = ({ value, onChange, placeholder, className }) => {
+  // 內部顯示狀態，允許暫時顯示 "111" (無逗號)，直到組字完成
+  const [displayValue, setDisplayValue] = useState('');
+  const isComposing = useRef(false);
+
+  // 當外部 value 改變時 (且非組字中)，同步更新顯示
+  useEffect(() => {
+    if (!isComposing.current) {
+      setDisplayValue(formatNumber(value));
+    }
+  }, [value]);
+
+  const handleChange = (e) => {
+    const raw = e.target.value;
+    setDisplayValue(raw); // 優先更新 UI 讓使用者看到自己打的字
+    
+    // 如果不是正在組字，才更新父層數據
+    if (!isComposing.current) {
+       onChange(parseNumber(raw));
+    }
+  };
+
+  const handleCompositionStart = () => {
+    isComposing.current = true;
+  };
+
+  const handleCompositionEnd = (e) => {
+    isComposing.current = false;
+    // 組字結束，強制觸發一次更新與格式化
+    const finalVal = parseNumber(e.target.value);
+    onChange(finalVal);
+    setDisplayValue(formatNumber(finalVal));
+  };
+
+  // 點擊時全選，解決 "0" 變成 "01" 的問題
+  const handleFocus = (e) => e.target.select();
+
+  return (
+    <input
+      type="text"
+      className={className}
+      value={displayValue}
+      onChange={handleChange}
+      onCompositionStart={handleCompositionStart}
+      onCompositionEnd={handleCompositionEnd}
+      onFocus={handleFocus}
+      placeholder={placeholder}
+      inputMode="decimal" // 手機版會跳出數字鍵盤
+    />
+  );
 };
 
 const AccountingView = ({ isDarkMode, dbReady, currentUser }) => {
@@ -42,7 +96,6 @@ const AccountingView = ({ isDarkMode, dbReady, currentUser }) => {
   
   const [historyFilter, setHistoryFilter] = useState({ name: '', date: '', dateType: 'created' });
   
-  // 這裡的 price 和 cost 我們在顯示時格式化，但在提交前會移除逗號
   const [formData, setFormData] = useState({
     seller: currentUser || MEMBERS[0], itemName: '', price: '', cost: 0, exchangeType: 'WORLD', participants: [...MEMBERS] 
   });
@@ -75,7 +128,6 @@ const AccountingView = ({ isDarkMode, dbReady, currentUser }) => {
     
     const finalParticipants = [...new Set([...formData.participants, formData.seller])];
     
-    // 確保價格是數字 (移除逗號)
     const initialPrice = parseNumber(formData.price);
     const initialCost = parseNumber(formData.cost);
 
@@ -83,17 +135,20 @@ const AccountingView = ({ isDarkMode, dbReady, currentUser }) => {
       ...formData,
       price: initialPrice,
       cost: initialCost,
-      // === 修改重點：建立時直接將當前售價加入歷史紀錄，自動產生第一筆刊登費 ===
       listingHistory: [initialPrice], 
       participants: finalParticipants.map(p => ({ name: p })),
       isSold: false, createdAt: new Date().toISOString(), settledAt: null 
     };
-    await addDoc(collection(db, "active_items"), newItem);
-    sendLog(currentUser, "新增記帳項目", `${newItem.itemName} ($${initialPrice})`);
     
-    // 重置表單
-    setFormData({ seller: currentUser || MEMBERS[0], itemName: '', price: '', cost: 0, exchangeType: 'WORLD', participants: [...MEMBERS] });
-    setIsModalOpen(false); setShowHistory(false);
+    try {
+        await addDoc(collection(db, "active_items"), newItem);
+        sendLog(currentUser, "新增記帳項目", `${newItem.itemName} ($${initialPrice})`);
+        setFormData({ seller: currentUser || MEMBERS[0], itemName: '', price: '', cost: 0, exchangeType: 'WORLD', participants: [...MEMBERS] });
+        setIsModalOpen(false); setShowHistory(false);
+    } catch (e) {
+        console.error("Add item failed", e);
+        alert("新增失敗，請檢查網路連線");
+    }
   };
 
   const updateItemValue = async (id, field, value) => {
@@ -281,28 +336,26 @@ const AccountingView = ({ isDarkMode, dbReady, currentUser }) => {
             <div className="grid grid-cols-2 gap-4 mb-4">
               <div><label className="block text-xs mb-1 opacity-70">販賣人</label><select className={`w-full p-2 rounded border ${theme.input} bg-gray-100 cursor-not-allowed`} value={formData.seller} disabled>{MEMBERS.map(m=><option key={m} value={m}>{m}</option>)}</select></div>
               
-              {/* === 修改：售價支援逗號 === */}
+              {/* === 修改：使用 MoneyInput 取代原始 input，解決輸入 Bug === */}
               <div>
                 <label className="block text-xs mb-1 opacity-70">價格</label>
-                <input 
-                  type="text" 
+                <MoneyInput 
                   className={`w-full p-2 rounded border ${theme.input}`} 
-                  value={formatNumber(formData.price)} 
-                  onChange={e => setFormData({...formData, price: parseNumber(e.target.value)})}
+                  value={formData.price} 
+                  onChange={(val) => setFormData({...formData, price: val})}
                   placeholder="0"
                 />
               </div>
 
               <div><label className="block text-xs mb-1 opacity-70">物品名稱</label><input type="text" className={`w-full p-2 rounded border ${theme.input}`} value={formData.itemName} onChange={e=>setFormData({...formData, itemName: e.target.value})}/></div>
               
-              {/* === 修改：成本支援逗號 === */}
+              {/* === 修改：使用 MoneyInput 取代原始 input === */}
               <div>
                 <label className="block text-xs mb-1 opacity-70">額外成本 (手動)</label>
-                <input 
-                  type="text" 
+                <MoneyInput 
                   className={`w-full p-2 rounded border ${theme.input}`} 
-                  value={formatNumber(formData.cost)} 
-                  onChange={e => setFormData({...formData, cost: parseNumber(e.target.value)})}
+                  value={formData.cost} 
+                  onChange={(val) => setFormData({...formData, cost: val})}
                   placeholder="0"
                 />
               </div>

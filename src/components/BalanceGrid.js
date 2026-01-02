@@ -1,16 +1,18 @@
 // src/components/BalanceGrid.js
-import React, { useState, useEffect, useMemo } from 'react'; // 加入 useMemo
-import { Grid, Wand2, X, TrendingUp, AlertCircle } from 'lucide-react'; // 加入新 Icon
+import React, { useState, useEffect, useMemo } from 'react';
+import { Grid, Wand2, X, TrendingUp, AlertCircle, Check, DollarSign } from 'lucide-react';
 import { doc, onSnapshot, setDoc, getDoc } from "firebase/firestore";
 
 import { db } from '../config/firebase';
 import { MEMBERS } from '../utils/constants';
-import { sendNotify, sendLog } from '../utils/helpers';
+import { sendNotify, sendLog, calculateFinance } from '../utils/helpers'; // 引入計算公式
 
-// 接收 activeItems 參數
 const BalanceGrid = ({ isOpen, onClose, theme, isDarkMode, currentUser, activeItems = [] }) => {
   const [gridData, setGridData] = useState({});
   const [loading, setLoading] = useState(true);
+
+  // 成員篩選狀態 (預設全選)
+  const [selectedForSelling, setSelectedForSelling] = useState(MEMBERS);
 
   useEffect(() => {
     if (!isOpen || !db) return;
@@ -25,46 +27,87 @@ const BalanceGrid = ({ isOpen, onClose, theme, isDarkMode, currentUser, activeIt
     return () => unsub();
   }, [isOpen]);
 
-  // === 新增邏輯：計算誰最該去賣東西 ===
+  const toggleMemberSelection = (member) => {
+    if (selectedForSelling.includes(member)) {
+      setSelectedForSelling(prev => prev.filter(m => m !== member));
+    } else {
+      setSelectedForSelling(prev => [...prev, member]);
+    }
+  };
+
+  // === 邏輯修正：將進行中項目的「未來分紅」納入計算 ===
   const sellerSuggestions = useMemo(() => {
     if (!gridData) return [];
 
-    const suggestions = MEMBERS.map(member => {
-      // 1. 計算預計收入 (別人欠我多少錢)
-      let totalReceivable = 0;
-      MEMBERS.forEach(payer => {
-        if (payer !== member) {
-          totalReceivable += (gridData[`${payer}_${member}`] || 0);
+    // 1. 先計算「進行中項目」對未來的影響
+    // 我們要模擬：如果這些東西都賣掉了，大家的債務會怎麼變？
+    const futureAdjustments = {}; 
+    // 初始化
+    MEMBERS.forEach(m => futureAdjustments[m] = { payable: 0, receivable: 0 });
+
+    activeItems.forEach(item => {
+        const seller = item.seller;
+        // 計算這一單每人分多少 (引用 helpers 的標準公式)
+        const { perPersonSplit } = calculateFinance(
+            item.price, 
+            item.exchangeType, 
+            item.participants?.length || 0, 
+            item.cost, 
+            item.listingHistory
+        );
+
+        if (perPersonSplit > 0 && seller) {
+            item.participants.forEach(p => {
+                const pName = typeof p === 'string' ? p : p.name; // 相容舊資料
+                
+                if (pName !== seller) {
+                    // 賣家(Ricky) 未來會欠 隊友(水野) 錢
+                    if (futureAdjustments[seller]) futureAdjustments[seller].payable += perPersonSplit;
+                    // 隊友(水野) 未來會被 賣家(Ricky) 欠錢
+                    if (futureAdjustments[pName]) futureAdjustments[pName].receivable += perPersonSplit;
+                }
+            });
+        }
+    });
+
+    // 2. 結合「現有表格」與「未來預測」計算分數
+    const suggestions = selectedForSelling.map(member => {
+      let currentPayable = 0;    // 表格上我欠別人的
+      let currentReceivable = 0; // 表格上別人欠我的
+
+      MEMBERS.forEach(other => {
+        if (member !== other) {
+          currentPayable += (gridData[`${member}_${other}`] || 0);
+          currentReceivable += (gridData[`${other}_${member}`] || 0);
         }
       });
 
-      // 2. 計算進行中項目的總金額 (我正在賣多少錢)
-      // 注意：這裡直接用售價加總，若要更精準可以用 (售價 - 成本 - 稅)
-      const currentSellingTotal = activeItems
-        .filter(item => item.seller === member)
-        .reduce((sum, item) => sum + (parseFloat(item.price) || 0), 0);
+      // 總負債 (我欠人的) = 現有 + 未來(進行中項目結算後)
+      const totalPayable = currentPayable + (futureAdjustments[member]?.payable || 0);
+      
+      // 總債權 (人欠我的) = 現有 + 未來(進行中項目結算後)
+      const totalReceivable = currentReceivable + (futureAdjustments[member]?.receivable || 0);
 
-      // 3. 計算「掛賣急迫度分數」 = 應收帳款 - 進行中金額
-      // 正值越大，代表「別人欠我很多，但我賣得不夠多」，所以急需掛賣
-      const score = totalReceivable - currentSellingTotal;
+      // === 核心公式 ===
+      // 分數 = 總債權 - 總負債
+      // 正分：別人欠我比較多 -> 我是債權人 -> 建議掛賣 (收現金來平衡)
+      // 負分：我欠別人比較多 -> 我是債務人 -> 暫緩掛賣 (避免囤積更多公款)
+      const score = totalReceivable - totalPayable;
 
       return {
         name: member,
         score: score,
-        receivable: totalReceivable,
-        selling: currentSellingTotal
+        payable: totalPayable,
+        receivable: totalReceivable
       };
     });
 
-    // 只顯示分數 > 0 的人 (代表還需要賣東西來平衡)，並由大到小排序
-    return suggestions
-      .filter(s => s.score > 0)
-      .sort((a, b) => b.score - a.score);
+    // 分數由大到小排序 (越正越該賣)
+    return suggestions.sort((a, b) => b.score - a.score);
 
-  }, [gridData, activeItems]);
+  }, [gridData, activeItems, selectedForSelling]);
 
   const handleCellChange = async (payer, receiver, value) => {
-    // ... (保持原本的 handleCellChange 邏輯不變)
     if (currentUser === '訪客') return; 
 
     const key = `${payer}_${receiver}`;
@@ -114,7 +157,6 @@ const BalanceGrid = ({ isOpen, onClose, theme, isDarkMode, currentUser, activeIt
   };
 
   const handleAutoBalance = async () => {
-    // ... (保持原本的 handleAutoBalance 邏輯不變)
     if (currentUser === '訪客') return alert("訪客權限僅供瀏覽");
     if (!db) return;
     if (!window.confirm("確定要執行「自動劃帳」嗎？\n這將會重新計算並覆蓋目前的表格，將所有複雜的債務簡化為最少筆數。")) return;
@@ -213,9 +255,11 @@ ${afterReport}
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50 overflow-auto">
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50 overflow-hidden">
       <div className={`w-full max-w-6xl rounded-xl p-6 h-[90vh] flex flex-col ${theme.card}`}>
-        <div className={`flex justify-between items-center mb-4 border-b pb-2 ${isDarkMode ? 'border-gray-700' : 'border-gray-200'}`}>
+        
+        {/* Header */}
+        <div className={`flex justify-between items-center mb-4 border-b pb-2 flex-none ${isDarkMode ? 'border-gray-700' : 'border-gray-200'}`}>
           <div className="flex items-center gap-4">
             <h3 className={`text-xl font-bold flex items-center gap-2 ${theme.text}`}>
               <Grid size={24}/> 成員餘額表 (Excel 模式)
@@ -231,11 +275,12 @@ ${afterReport}
           <button onClick={onClose} className={`p-1 rounded ${isDarkMode ? 'hover:bg-gray-700 text-gray-400' : 'hover:bg-gray-200 text-gray-500'}`}><X size={24}/></button>
         </div>
 
-        <div className="flex-1 overflow-auto flex flex-col gap-6">
+        {/* Content Wrapper: 使用 flex-1 讓表格自動佔據剩餘空間 */}
+        <div className="flex-1 flex flex-col overflow-hidden gap-4">
            {loading ? <div className={`p-10 text-center ${theme.subText}`}>載入中...</div> : (
              <>
-                {/* 1. 餘額表格 */}
-                <div className="overflow-auto max-h-[60vh]">
+                {/* 1. 餘額表格 (佔據主要空間，自適應高度) */}
+                <div className="flex-1 overflow-auto border rounded relative">
                     <table className="w-full border-collapse min-w-[1000px]">
                     <thead>
                         <tr>
@@ -311,51 +356,76 @@ ${afterReport}
                     </table>
                 </div>
 
-                {/* 2. 建議掛賣名單區塊 (新增) */}
-                <div className={`p-4 rounded-xl border ${isDarkMode ? 'bg-orange-900/10 border-orange-500/30' : 'bg-orange-50 border-orange-200'}`}>
-                    <h4 className={`font-bold text-sm mb-3 flex items-center gap-2 ${isDarkMode ? 'text-orange-400' : 'text-orange-600'}`}>
-                        <TrendingUp size={18}/> 建議掛賣順序 (誰最應該去賣東西？)
-                    </h4>
+                {/* 2. 建議掛賣名單區塊 (橫向捲動) */}
+                <div className={`p-3 rounded-xl border flex flex-col gap-2 flex-none ${isDarkMode ? 'bg-orange-900/10 border-orange-500/30' : 'bg-orange-50 border-orange-200'}`}>
                     
-                    {sellerSuggestions.length > 0 ? (
-                        <div className="flex flex-wrap gap-4">
-                            {sellerSuggestions.map((item, index) => (
-                                <div key={item.name} className={`flex items-center gap-3 p-3 rounded-lg border shadow-sm relative overflow-hidden ${isDarkMode ? 'bg-gray-800 border-gray-600' : 'bg-white border-gray-200'}`}>
-                                    {/* 排名標籤 */}
-                                    <div className={`absolute top-0 left-0 px-1.5 py-0.5 text-[10px] font-bold text-white rounded-br ${index === 0 ? 'bg-red-500' : index === 1 ? 'bg-orange-500' : 'bg-gray-500'}`}>
-                                        #{index + 1}
-                                    </div>
-                                    
-                                    <div className="flex flex-col ml-2">
-                                        <span className={`font-bold text-lg leading-none ${theme.text}`}>{item.name}</span>
-                                        <span className="text-[10px] opacity-60">急迫度</span>
-                                    </div>
-
-                                    <div className="flex flex-col items-end border-l pl-3 border-gray-500/20">
-                                        <span className="font-mono font-bold text-orange-500 text-lg">
-                                            +${item.score.toLocaleString()}
-                                        </span>
-                                        <div className="text-[10px] flex gap-2 opacity-60">
-                                            <span title="別人欠我的">收: {item.receivable/10000}萬</span>
-                                            <span title="我正在賣的">賣: {item.selling/10000}萬</span>
-                                        </div>
-                                    </div>
-                                </div>
+                    <div className="flex justify-between items-center">
+                        <h4 className={`font-bold text-sm flex items-center gap-2 ${isDarkMode ? 'text-orange-400' : 'text-orange-600'}`}>
+                            <TrendingUp size={16}/> 建議掛賣順序 (已包含進行中項目試算)
+                        </h4>
+                        
+                        <div className="flex overflow-x-auto gap-1 max-w-[50%] no-scrollbar">
+                            {MEMBERS.map(member => (
+                                <button
+                                    key={member}
+                                    onClick={() => toggleMemberSelection(member)}
+                                    className={`px-1.5 py-0.5 rounded text-[10px] border whitespace-nowrap transition-all flex items-center gap-1
+                                      ${selectedForSelling.includes(member) 
+                                        ? 'bg-orange-500 text-white border-orange-500' 
+                                        : 'bg-transparent opacity-40 border-gray-500'}`}
+                                >
+                                    {member}
+                                </button>
                             ))}
                         </div>
+                    </div>
+                    
+                    {sellerSuggestions.length > 0 ? (
+                        <div className="flex overflow-x-auto gap-3 pb-1">
+                            {sellerSuggestions.map((item, index) => {
+                                // 正分 = 債權人 (別人欠我錢) -> 應該賣
+                                const shouldSell = item.score > 0;
+                                
+                                return (
+                                    <div key={item.name} className={`flex-none flex items-center gap-2 p-2 rounded-lg border shadow-sm min-w-[140px] relative overflow-hidden transition-all ${isDarkMode ? 'bg-gray-800 border-gray-600' : 'bg-white border-gray-200'} ${index === 0 ? 'ring-2 ring-orange-500/50' : ''}`}>
+                                        <div className={`absolute top-0 left-0 px-1.5 text-[9px] font-bold text-white rounded-br ${index === 0 ? 'bg-red-500' : index === 1 ? 'bg-orange-500' : 'bg-gray-500'}`}>
+                                            #{index + 1}
+                                        </div>
+                                        
+                                        <div className="flex flex-col ml-1 mt-1">
+                                            <span className={`font-bold text-sm leading-none ${theme.text}`}>{item.name}</span>
+                                            <span className={`text-[9px] ${shouldSell ? 'text-orange-500 font-bold' : 'opacity-50'}`}>
+                                                {shouldSell ? '建議掛賣' : '暫緩掛賣'}
+                                            </span>
+                                        </div>
+
+                                        <div className="flex flex-col items-end flex-1">
+                                            <span className={`font-mono font-bold text-sm ${shouldSell ? 'text-orange-500' : 'text-gray-500'}`}>
+                                                {shouldSell ? '+' : ''}{Math.round(item.score/10000)}萬
+                                            </span>
+                                            <div className="text-[8px] opacity-40 flex flex-col items-end leading-tight">
+                                                <span>預計債權: {Math.round(item.receivable/10000)}萬</span>
+                                                <span>預計負債: {Math.round(item.payable/10000)}萬</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
                     ) : (
-                        <div className="text-sm opacity-60 flex items-center gap-2">
-                            <AlertCircle size={16}/> 目前大家掛賣的金額都足以覆蓋債務，沒有急迫需求。
+                        <div className="text-xs opacity-50 text-center py-1">
+                            請勾選成員以計算建議順序
                         </div>
                     )}
-                    <div className="mt-2 text-[10px] opacity-40">
-                        * 計算公式：(預定收入) - (進行中項目的總售價)。正值越高代表「別人欠你很多錢，但你掛賣的東西不夠多」，建議優先去賣。
+                    <div className="text-[9px] opacity-40 flex justify-between">
+                        <span>* 正值: 預計總債權大於總負債，建議賣出變現。</span>
+                        <span>* 負值: 預計總負債過高，不宜再賣。</span>
                     </div>
                 </div>
              </>
            )}
         </div>
-        <div className={`mt-2 text-xs ${theme.subText}`}>
+        <div className={`mt-2 text-xs flex-none ${theme.subText}`}>
            * 說明：表格數字代表「付款人」欠「收款人」的金額。 <br/>
            * 🔒 您只能修改與自己有關的欄位（您是付款人或收款人）。Wolf 擁有所有修改權限。
         </div>
